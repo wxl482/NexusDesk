@@ -1,0 +1,12 @@
+{
+  "name": "nexusdesk",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && ./venv/bin/python3 main.py",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:frontend": "cd frontend && npm run build:vue",
+    "test:backend": "cd backend && ./venv/bin/python3 tests/test_core.py"
+  }
+}

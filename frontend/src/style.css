@@ -1,0 +1,260 @@
+@import 'highlight.js/styles/github-dark.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color-scheme: dark light;
+}
+
+/* Electron 现代化窗口拖动区域支持 */
+.window-drag-region {
+  -webkit-app-region: drag;
+}
+
+.window-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* 现代化原生级滚动拖动条 (Custom Scrollbars) - 深度融合主题色 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.35);
+  border-radius: 9999px;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 122, 255, 0.5); /* 悬浮时呈现柔和主题蓝 */
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: #007aff; /* 拖拽时呈现主题高亮蓝 */
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(107, 160, 254, 0.5);
+}
+
+.dark ::-webkit-scrollbar-thumb:active {
+  background: #3b82f6;
+}
+
+/* 现代主题级参数滑块拖动条 (Range Slider) - 媲美 macOS 原生控制中心质感 */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+  accent-color: #007aff;
+  transition: background-color 0.2s ease;
+}
+
+.dark input[type="range"] {
+  background: #27272a;
+  accent-color: #3b82f6;
+}
+
+/* WebKit 轨道 */
+input[type="range"]::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 9999px;
+  cursor: pointer;
+}
+
+/* WebKit 拖动手柄 (Thumb) */
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #007aff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 122, 255, 0.1);
+  cursor: grab;
+  margin-top: -5px; /* (6px - 16px) / 2 = -5px */
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.dark input[type="range"]::-webkit-slider-thumb {
+  background: #18181b;
+  border: 2px solid #3b82f6;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(59, 130, 246, 0.2);
+}
+
+/* Hover 状态：手柄微放大并泛光 */
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 2px 6px rgba(0, 122, 255, 0.25), 0 0 0 3px rgba(0, 122, 255, 0.15);
+}
+
+.dark input[type="range"]::-webkit-slider-thumb:hover {
+  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.35), 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+
+/* Active 拖拽中状态：手柄变为实心主题色，呈现抓取手势与扩散光环 */
+input[type="range"]::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.22);
+  background: #007aff;
+  border-color: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.4), 0 0 0 4px rgba(0, 122, 255, 0.2);
+}
+
+.dark input[type="range"]::-webkit-slider-thumb:active {
+  background: #3b82f6;
+  border-color: #ffffff;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.5), 0 0 0 4px rgba(59, 130, 246, 0.25);
+}
+
+/* Markdown prose tweaks - 桌面端精致小巧字阶排版 */
+.markdown-body {
+  line-height: 1.6;
+  font-size: 0.84rem; /* 约 13.5px，现代桌面端标准阅读字号 */
+  letter-spacing: -0.01em;
+}
+
+.markdown-body p {
+  margin-bottom: 0.5rem;
+}
+
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body pre {
+  background: #18181b;
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+/* 统一现代代码块渲染 (单色暗色系卡片，杜绝多层嵌套与异色色块) */
+.markdown-body .code-block-container {
+  background: #18181b !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 0.75rem !important;
+  overflow: hidden !important;
+  margin: 0.75rem 0 !important;
+}
+
+.markdown-body .code-block-container .code-block-header {
+  background: #202024 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+}
+
+.markdown-body .code-block-container pre,
+.markdown-body .code-block-container pre.hljs {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 0.85rem 1rem !important;
+  box-shadow: none !important;
+  color: #e4e4e7 !important;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.markdown-body .code-block-container pre code {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+}
+
+.markdown-body code:not(pre code) {
+  background: #f1f3f5;
+  color: #1f2937;
+  padding: 0.12rem 0.38rem;
+  border-radius: 0.35rem;
+  font-size: 0.84em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.dark .markdown-body code:not(pre code) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.markdown-body ul, .markdown-body ol {
+  margin-left: 1.15rem;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-body li {
+  margin-bottom: 0.2rem;
+}
+
+.markdown-body ul {
+  list-style-type: disc;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  font-weight: 600;
+  margin-top: 0.75rem;
+  margin-bottom: 0.35rem;
+  line-height: 1.35;
+}
+
+.markdown-body h1 { font-size: 1.12rem; font-weight: 700; }
+.markdown-body h2 { font-size: 1.02rem; }
+.markdown-body h3 { font-size: 0.92rem; }
+.markdown-body h4 { font-size: 0.85rem; }
+
+.markdown-body blockquote {
+  border-left: 2px solid rgba(14, 165, 233, 0.6);
+  padding-left: 0.65rem;
+  margin: 0.5rem 0;
+  opacity: 0.85;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.8rem;
+}
+
+.markdown-body th, .markdown-body td {
+  border: 1px solid rgba(156, 163, 175, 0.2);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+}
+
+.markdown-body th {
+  background: rgba(156, 163, 175, 0.08);
+  font-weight: 600;
+}
