@@ -26,6 +26,7 @@ from app.tools.base import DEFAULT_TOOLS, get_all_tools
 from app.llm.factory import LLMFactory
 from app.agents.laya_service import laya_service
 from app.agents.planner import generate_task_plan, should_decompose_goal
+from app.agents.history_sanitizer import sanitize_message_history
 
 # 全局共享内存检查点（Checkpointer），用于支持多轮连续对话上下文存储
 memory_checkpointer = MemorySaver()
@@ -210,10 +211,11 @@ def create_agent_graph(
 
     # 3. 上下文自动压缩前置节点 (Compress Node)
     async def compress_node(state: AgentState) -> Dict[str, Any]:
-        messages = state.get("messages", [])
-        if not messages:
+        raw_messages = state.get("messages", [])
+        if not raw_messages:
             return {}
 
+        messages, _ = sanitize_message_history(raw_messages)
         existing_summary = state.get("summary")
         model_name = getattr(base_llm, "model_name", None) or "default"
 
@@ -422,12 +424,14 @@ def create_agent_graph(
                 "========================================"
             )
 
-        messages = list(state["messages"])
+        raw_messages = list(state["messages"])
+        messages, healed_replacements = sanitize_message_history(raw_messages)
         current_steps = state.get("tool_steps", 0) or 0
 
         # 在 react / multi_agent / rag 模式下，保持工具绑定能力，由 LLM 自主决定是否调用；
-        # 仅当用户明确选择纯对话模式 (mode == 'chat') 时使用免工具的纯文本管道
+        # 仅当用户明确选择纯对话模式 (mode == 'chat') 或步数已达到收敛阈值 (>= 4) 时使用免工具的纯文本管道
         is_pure_chat = (mode == "chat")
+        force_text_conclusion = is_pure_chat or (current_steps >= 4)
 
         if current_steps >= 3:
             effective_system_prompt += (
@@ -437,7 +441,7 @@ def create_agent_graph(
                 "========================================"
             )
 
-        if is_pure_chat:
+        if force_text_conclusion:
             response = await chat_lcel_chain.ainvoke({
                 "system_prompt": effective_system_prompt,
                 "messages": messages,
@@ -460,8 +464,16 @@ def create_agent_graph(
                     response.tool_calls.extend(parsed_calls)
                 response.content = clean_dsml_content(response.content)
 
+        # 防御性校验：若已达最大步数，强制剥除可能残留的 tool_calls，确保输出纯文本并自然走向 END
+        if current_steps >= 4 and getattr(response, "tool_calls", None):
+            logger.info("[AgentNode] 已达到单轮最大工具调用步数 (4步)，强制剥离残留 tool_calls 以保障合规走向结束。")
+            response.tool_calls = []
+            if hasattr(response, "additional_kwargs"):
+                response.additional_kwargs.pop("tool_calls", None)
+
         current_active = state.get("active_agent") or mode
-        return {"messages": [response], "active_agent": current_active}
+        state_updates = [*healed_replacements, response]
+        return {"messages": state_updates, "active_agent": current_active}
 
     # 5. 构造 LangGraph 状态图
     workflow = StateGraph(AgentState)
@@ -470,8 +482,27 @@ def create_agent_graph(
     base_tool_node = ToolNode(active_tools, handle_tool_errors=True)
 
     async def custom_tools_node(state: AgentState) -> Dict[str, Any]:
-        """执行外部工具调用并递增计数器"""
-        output = await base_tool_node.ainvoke(state)
+        """执行外部工具调用并递增计数器，带有全局容灾与 tool_call_id 防御闭环"""
+        try:
+            output = await base_tool_node.ainvoke(state)
+        except Exception as e:
+            logger.error(f"[ToolsNode] 工具节点执行异常: {e}", exc_info=True)
+            # 找到触发此工具节点的最后一条 AIMessage，为其所有的 tool_call_id 生成容错 ToolMessage，确保状态闭环
+            messages = state.get("messages", [])
+            fallback_msgs = []
+            if messages:
+                last_msg = messages[-1]
+                if isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None):
+                    for tc in last_msg.tool_calls:
+                        cid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                        if cid:
+                            from langchain_core.messages import ToolMessage
+                            fallback_msgs.append(ToolMessage(
+                                content=f"工具执行异常中断: {str(e)}",
+                                tool_call_id=cid
+                            ))
+            output = {"messages": fallback_msgs}
+
         current_steps = (state.get("tool_steps", 0) or 0) + 1
         output["tool_steps"] = current_steps
         return output

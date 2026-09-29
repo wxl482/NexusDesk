@@ -302,7 +302,9 @@ async def get_history(session_id: str):
         if not state or "channel_values" not in state or "messages" not in state["channel_values"]:
             return {"session_id": session_id, "messages": []}
 
-        messages = state["channel_values"]["messages"]
+        raw_messages = state["channel_values"]["messages"]
+        from app.agents.history_sanitizer import sanitize_message_history
+        messages, _ = sanitize_message_history(raw_messages)
         serialized = []
         for m in messages:
             role = "user" if isinstance(m, HumanMessage) else "assistant" if isinstance(m, AIMessage) else "system"
