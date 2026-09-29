@@ -59,7 +59,7 @@ async def upload_file(
         parsed = parse_document(content_bytes, filename)
         if not parsed.get("success") or not parsed.get("text"):
             err_msg = parsed.get("error", "上传文件为空或无法解码为有效文本。")
-            raise HTTPException(status_code=400, detail=f"文件解析失败: {err_msg}")
+            raise HTTPException(status_code=400, detail=err_msg)
 
         text_content = parsed["text"]
         doc_type = parsed.get("doc_type", "file")
@@ -71,6 +71,9 @@ async def upload_file(
             doc_type=doc_type,
             category=category or "default",
         )
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("message", "文档写入向量库失败"))
+
         result["parsed_type"] = doc_type
         return result
     except HTTPException:

@@ -110,4 +110,48 @@ export const apiClient = {
     const res = await api.get(`/api/chat/history/${sessionId}`)
     return res.data
   },
+
+  /** 获取所有已配置的 MCP 服务列表 */
+  async getMcpServers() {
+    const res = await api.get('/api/mcp/servers')
+    return res.data.servers
+  },
+
+  /** 注册或更新 MCP 外部协议服务 */
+  async registerMcpServer(data: {
+    id: string
+    name: string
+    command: string
+    args?: string[]
+    env?: Record<string, string>
+    enabled?: boolean
+    description?: string
+  }) {
+    const res = await api.post('/api/mcp/servers', data)
+    return res.data
+  },
+
+  /** 切换 MCP 服务启用/停用状态 */
+  async toggleMcpServer(serverId: string, enabled: boolean) {
+    const res = await api.post(`/api/mcp/servers/${serverId}/toggle`, { enabled })
+    return res.data
+  },
+
+  /** 探测 MCP 服务可用工具 (stdio 实时握手) */
+  async probeMcpServer(serverId: string) {
+    const res = await api.post(`/api/mcp/servers/${serverId}/probe`)
+    return res.data
+  },
+
+  /** 删除 MCP 服务 */
+  async deleteMcpServer(serverId: string) {
+    const res = await api.delete(`/api/mcp/servers/${serverId}`)
+    return res.data
+  },
+
+  /** 获取所有 MCP 汇集激活的工具列表 */
+  async getMcpTools() {
+    const res = await api.get('/api/mcp/tools')
+    return res.data.tools
+  },
 }

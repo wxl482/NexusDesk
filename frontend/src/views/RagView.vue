@@ -4,6 +4,7 @@
  * 具备拖拽多格式文件解析入库、直接录入文本笔记、集合列表浏览与删除、以及语义相似度检索测试台。
  */
 import { ref, onMounted } from 'vue'
+import { useMessage } from 'naive-ui'
 import {
   Upload,
   FileText,
@@ -12,9 +13,12 @@ import {
   Plus,
   RefreshCw,
   FileCheck,
+  Loader2,
+  AlertCircle,
 } from 'lucide-vue-next'
 import { useRagStore } from '../stores/rag'
 
+const message = useMessage()
 const ragStore = useRagStore()
 
 // 当前激活的选项卡：'files' 文件集合 | 'text' 录入文本 | 'search' 检索测试
@@ -42,8 +46,18 @@ const handleFileChange = async (e: Event) => {
   const target = e.target as HTMLInputElement
   if (target.files && target.files.length > 0) {
     const file = target.files[0]
-    await ragStore.uploadFile(file)
-    target.value = ''
+    const loadingMsg = message.loading(`正在解析并向量化《${file.name}》...`, { duration: 0 })
+    try {
+      const res = await ragStore.uploadFile(file)
+      if (res.success) {
+        message.success(res.message, { duration: 4000 })
+      } else {
+        message.error(res.message, { duration: 6000 })
+      }
+    } finally {
+      loadingMsg.destroy()
+      target.value = ''
+    }
   }
 }
 
@@ -52,18 +66,49 @@ const handleDrop = async (e: DragEvent) => {
   e.preventDefault()
   if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
     const file = e.dataTransfer.files[0]
-    await ragStore.uploadFile(file)
+    const loadingMsg = message.loading(`正在解析并向量化《${file.name}》...`, { duration: 0 })
+    try {
+      const res = await ragStore.uploadFile(file)
+      if (res.success) {
+        message.success(res.message, { duration: 4000 })
+      } else {
+        message.error(res.message, { duration: 6000 })
+      }
+    } finally {
+      loadingMsg.destroy()
+    }
   }
 }
 
 // 提交录入的纯文本/Markdown 笔记
 const handleTextSubmit = async () => {
-  if (!textContent.value.trim()) return
-  const ok = await ragStore.uploadText(textTitle.value || '自定义笔记', textContent.value)
+  if (!textContent.value.trim()) {
+    message.warning('请输入笔记正文内容')
+    return
+  }
+  const loadingMsg = message.loading('正在切分并存入知识库...', { duration: 0 })
+  try {
+    const res = await ragStore.uploadText(textTitle.value || '自定义笔记', textContent.value)
+    if (res.success) {
+      message.success(res.message, { duration: 3000 })
+      textTitle.value = ''
+      textContent.value = ''
+      activeTab.value = 'files'
+    } else {
+      message.error(res.message, { duration: 5000 })
+    }
+  } finally {
+    loadingMsg.destroy()
+  }
+}
+
+// 删除知识库文档
+const handleDeleteDoc = async (docId: string, title: string) => {
+  const ok = await ragStore.deleteDocument(docId)
   if (ok) {
-    textTitle.value = ''
-    textContent.value = ''
-    activeTab.value = 'files'
+    message.success(`已彻底移除文档《${title}》`)
+  } else {
+    message.error('删除文档失败')
   }
 }
 
@@ -133,8 +178,9 @@ const handleSearch = async () => {
         <div
           @dragover.prevent
           @drop="handleDrop"
-          @click="triggerFileSelect"
-          class="border-2 border-dashed border-gray-300 dark:border-zinc-700 hover:border-gray-400 dark:hover:border-zinc-500 rounded-2xl p-8 text-center cursor-pointer transition-colors bg-white/50 dark:bg-zinc-900/30"
+          @click="!ragStore.isLoading && triggerFileSelect()"
+          class="border-2 border-dashed border-gray-300 dark:border-zinc-700 hover:border-gray-400 dark:hover:border-zinc-500 rounded-2xl p-8 text-center cursor-pointer transition-all bg-white/50 dark:bg-zinc-900/30 relative overflow-hidden group"
+          :class="{ 'opacity-70 cursor-not-allowed': ragStore.isLoading }"
         >
           <input
             ref="fileInput"
@@ -143,14 +189,30 @@ const handleSearch = async () => {
             class="hidden"
             accept=".txt,.md,.markdown,.pdf,.docx,.doc,.xlsx,.xls,.xlsm,.csv,.tsv,.json,.py,.js,.ts,.html,.css,.sql,.sh,.log,.yaml,.yml"
           />
-          <div class="w-12 h-12 rounded-full bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-gray-700 dark:text-zinc-200 mx-auto mb-3">
-            <Upload class="w-6 h-6" />
+          <div v-if="ragStore.isLoading" class="flex flex-col items-center justify-center py-4">
+            <Loader2 class="w-8 h-8 text-indigo-600 dark:text-indigo-400 animate-spin mb-2" />
+            <div class="text-xs font-semibold text-gray-800 dark:text-zinc-200">正在解析并切分向量入库...</div>
+            <div class="text-[11px] text-gray-400 mt-0.5">自动执行表格提取、双层父子分块（Parent-Child）与多维索引</div>
           </div>
-          <div class="text-sm font-semibold text-gray-800 dark:text-zinc-200">
-            点击选择文件，或将本地文件直接拖拽至此处
-          </div>
-          <div class="text-xs text-gray-400 mt-1">
-            支持 Office 文档 (Word/Excel)、PDF、Markdown、CSV 表格、纯文本与各类程序源码
+          <div v-else>
+            <div class="w-12 h-12 rounded-full bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-gray-700 dark:text-zinc-200 mx-auto mb-3 group-hover:scale-105 transition-transform">
+              <Upload class="w-6 h-6" />
+            </div>
+            <div class="text-sm font-semibold text-gray-800 dark:text-zinc-200">
+              点击选择文件，或将本地文件直接拖拽至此处
+            </div>
+            <div class="text-xs text-gray-400 mt-1">
+              自动进行结构化表格解析、双层父子分块（Parent-Child）并同步构建 Milvus 向量与 BM25 索引
+            </div>
+            <!-- 格式标签栏 -->
+            <div class="flex flex-wrap items-center justify-center gap-1.5 mt-3 pt-3 border-t border-gray-100 dark:border-zinc-800/80">
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border border-red-200/60 dark:border-red-800/40">PDF 文档</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200/60 dark:border-blue-800/40">Word (.docx)</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/40">Excel (.xlsx)</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-200/60 dark:border-amber-800/40">CSV / TSV</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 border border-purple-200/60 dark:border-purple-800/40">Markdown (.md)</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-300 border border-gray-200 dark:border-zinc-700">TXT / 代码文件</span>
+            </div>
           </div>
         </div>
 
@@ -184,8 +246,8 @@ const handleSearch = async () => {
 
               <!-- 删除按钮 -->
               <button
-                @click="ragStore.deleteDocument(doc.doc_id)"
-                class="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-zinc-200 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                @click="handleDeleteDoc(doc.doc_id, doc.title)"
+                class="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-zinc-200 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
                 title="删除此文档的所有切片"
               >
                 <Trash2 class="w-4 h-4" />

@@ -42,12 +42,20 @@ export const useRagStore = defineStore('rag', {
     async uploadText(title: string, content: string) {
       this.isLoading = true
       try {
-        await apiClient.uploadRagText(title, content)
+        const res = await apiClient.uploadRagText(title, content)
         await this.fetchDocuments()
-        return true
-      } catch (err) {
+        return {
+          success: true,
+          message: `笔记《${title}》已成功存入知识库！`,
+          data: res,
+        }
+      } catch (err: any) {
         console.error('上传文本到知识库失败:', err)
-        return false
+        const errMsg = err.response?.data?.detail || err.message || '笔记录入失败'
+        return {
+          success: false,
+          message: errMsg,
+        }
       } finally {
         this.isLoading = false
       }
@@ -57,12 +65,21 @@ export const useRagStore = defineStore('rag', {
     async uploadFile(file: File) {
       this.isLoading = true
       try {
-        await apiClient.uploadRagFile(file)
+        const res = await apiClient.uploadRagFile(file)
         await this.fetchDocuments()
-        return true
-      } catch (err) {
+        const chunks = res.chunks_count || res.chunks || 0
+        return {
+          success: true,
+          message: `文档《${file.name}》已成功解析并录入知识库（生成 ${chunks} 个切片）`,
+          data: res,
+        }
+      } catch (err: any) {
         console.error('上传文件到知识库失败:', err)
-        return false
+        const errMsg = err.response?.data?.detail || err.message || '文件上传与解析失败'
+        return {
+          success: false,
+          message: errMsg,
+        }
       } finally {
         this.isLoading = false
       }
