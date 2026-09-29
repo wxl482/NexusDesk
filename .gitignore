@@ -72,3 +72,5 @@ backend/.idea/
 .vscode/
 *.swp
 *.swo
+.workbuddy/
+.gemini/

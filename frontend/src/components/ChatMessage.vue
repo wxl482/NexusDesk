@@ -12,6 +12,13 @@ import {
   AlertCircle,
   FileText,
   RotateCcw,
+  Zap,
+  Brain,
+  ListTodo,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  Circle,
 } from 'lucide-vue-next'
 import ThinkingProcess from './ThinkingProcess.vue'
 import type { ChatMessage } from '../stores/chat'
@@ -306,6 +313,57 @@ const handleMarkdownClick = async (e: MouseEvent) => {
 
     <!-- 助手回复区域：左对齐纯净自然文本流，仅在角色为 assistant 或 system 时渲染 -->
     <div v-else-if="message.role === 'assistant' || message.role === 'system'" class="group w-full my-3 text-[13.5px] text-gray-800 dark:text-zinc-200">
+      <!-- 0. 智能模型动态路由指示胶囊 (显示自动匹配的推理/极速模型) -->
+      <div v-if="message.routedModel" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 mb-2 rounded-full text-[11px] font-medium bg-cyan-50/80 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border border-cyan-200/70 dark:border-cyan-800/50" :title="message.routedModel.reason || ''">
+        <Zap v-if="message.routedModel.tier === 'fast'" class="w-3 h-3 text-cyan-500" />
+        <Brain v-else class="w-3 h-3 text-indigo-500" />
+        <span>{{ message.routedModel.tier === 'fast' ? '⚡ 极速模型' : '🧠 深度推理' }} ({{ message.routedModel.model }})</span>
+      </div>
+
+      <!-- 0.5 长程任务规划与执行阶段清单 (Plan-and-Solve) -->
+      <div v-if="message.plan && message.plan.length > 0" class="mb-3 p-3.5 rounded-2xl bg-white/70 dark:bg-zinc-900/60 border border-gray-200/80 dark:border-zinc-800 shadow-2xs">
+        <div class="flex items-center justify-between text-xs font-semibold text-gray-800 dark:text-zinc-200 mb-2">
+          <span class="flex items-center gap-1.5">
+            <ListTodo class="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
+            <span>长程任务规划状态机 (Plan-and-Solve)</span>
+          </span>
+          <span class="text-[10px] text-gray-400 font-normal">共 {{ message.plan.length }} 个阶段</span>
+        </div>
+        <div class="space-y-1.5">
+          <div
+            v-for="step in message.plan"
+            :key="step.id"
+            class="flex items-start gap-2 text-xs py-1.5 px-2 rounded-lg transition-colors"
+            :class="[step.status === 'running' ? 'bg-cyan-50/70 dark:bg-cyan-950/30 text-cyan-900 dark:text-cyan-200' : 'text-gray-700 dark:text-zinc-300']"
+          >
+            <div class="mt-0.5 flex-shrink-0">
+              <Loader2 v-if="step.status === 'running'" class="w-3.5 h-3.5 text-cyan-500 animate-spin" />
+              <CheckCircle2 v-else-if="step.status === 'completed'" class="w-3.5 h-3.5 text-emerald-500" />
+              <XCircle v-else-if="step.status === 'failed'" class="w-3.5 h-3.5 text-rose-500" />
+              <Circle v-else class="w-3.5 h-3.5 text-gray-400" />
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="font-medium flex items-center gap-2">
+                <span>{{ step.title }}</span>
+                <span
+                  class="text-[10px] px-1.5 py-0.2 rounded font-normal"
+                  :class="[
+                    step.status === 'running' ? 'bg-cyan-200/60 dark:bg-cyan-900/60 text-cyan-800 dark:text-cyan-200' :
+                    step.status === 'completed' ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300' :
+                    'bg-gray-100 dark:bg-zinc-800 text-gray-500'
+                  ]"
+                >
+                  {{ step.status === 'running' ? '执行中' : step.status === 'completed' ? '已完成' : '待执行' }}
+                </span>
+              </div>
+              <div v-if="step.description" class="text-[11px] text-gray-400 dark:text-zinc-500 truncate mt-0.5">
+                {{ step.description }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 1. 最顶部的思考过程与内联极简工具调用（对标用户截图：用时 Xs 折叠条与单行极简工具） -->
       <ThinkingProcess
         v-if="hasThinkingOrTools"

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, nativeImage, globalShortcut } from 'electron'
 import path from 'path'
 import { PythonBackendManager } from './python-manager'
 
@@ -7,6 +7,7 @@ process.env.DIST = path.join(__dirname, '../dist')
 process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(process.env.DIST, '../public')
 
 let win: BrowserWindow | null = null
+let quickBarWin: BrowserWindow | null = null
 const preload = path.join(__dirname, 'preload.js')
 const pythonManager = PythonBackendManager.getInstance()
 
@@ -83,6 +84,58 @@ function createWindow() {
   }
 }
 
+/**
+ * 创建 Raycast / Spotlight 悬浮快捷呼出小窗 (QuickBar)
+ */
+function createQuickBarWindow() {
+  if (quickBarWin) return
+
+  quickBarWin = new BrowserWindow({
+    width: 680,
+    height: 440,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    show: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    webPreferences: {
+      preload,
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  })
+
+  if (process.platform === 'darwin') {
+    quickBarWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  }
+
+  const quickUrl = process.env.VITE_DEV_SERVER_URL
+    ? `${process.env.VITE_DEV_SERVER_URL}#/quick-bar`
+    : `file://${path.join(process.env.DIST || path.join(__dirname, '../dist'), 'index.html')}#/quick-bar`
+
+  quickBarWin.loadURL(quickUrl)
+
+  // 失焦时自动优雅收起
+  quickBarWin.on('blur', () => {
+    quickBarWin?.hide()
+  })
+}
+
+function toggleQuickBar() {
+  if (!quickBarWin) {
+    createQuickBarWindow()
+  }
+
+  if (quickBarWin?.isVisible()) {
+    quickBarWin.hide()
+  } else {
+    quickBarWin?.show()
+    quickBarWin?.focus()
+  }
+}
+
 // 所有窗口关闭时的生命周期事件
 app.on('window-all-closed', () => {
   // 安全停止后端服务
@@ -93,8 +146,9 @@ app.on('window-all-closed', () => {
   }
 })
 
-// 应用彻底退出前确保子进程销毁
+// 应用彻底退出前确保子进程销毁与快捷键注销
 app.on('before-quit', () => {
+  globalShortcut.unregisterAll()
   pythonManager.stop()
 })
 
@@ -124,7 +178,7 @@ ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog(win, {
     properties: ['openFile'],
     filters: [
-      { name: '文档与代码', extensions: ['txt', 'md', 'pdf', 'docx', 'py', 'json', 'csv'] }
+      { name: '文档与代码', extensions: ['txt', 'md', 'pdf', 'docx', 'xlsx', 'py', 'json', 'csv'] }
     ]
   })
   if (!result.canceled && result.filePaths.length > 0) {
@@ -140,5 +194,35 @@ ipcMain.handle('open-external', async (_, url: string) => {
   }
 })
 
-// Electron 初始化就绪后创建窗口
-app.whenReady().then(createWindow)
+// QuickBar 控制 IPC
+ipcMain.handle('hide-quick-bar', () => {
+  quickBarWin?.hide()
+})
+
+ipcMain.handle('open-in-main-window', (_, query: string) => {
+  quickBarWin?.hide()
+  if (!win) {
+    createWindow()
+  } else {
+    win.show()
+    win.focus()
+  }
+  if (query) {
+    win?.webContents.send('focus-chat-query', query)
+  }
+})
+
+// Electron 初始化就绪后创建主窗口、浮动窗口与全局快捷键
+app.whenReady().then(() => {
+  createWindow()
+  createQuickBarWindow()
+
+  // 注册 Raycast 风格全局唤出快捷键: CommandOrControl+Shift+Space 或 Alt+Space
+  try {
+    globalShortcut.register('CommandOrControl+Shift+Space', toggleQuickBar)
+    globalShortcut.register('Alt+Space', toggleQuickBar)
+    console.log('[Electron] 成功注册 QuickBar 全局快捷键: Cmd/Ctrl+Shift+Space / Alt+Space')
+  } catch (err) {
+    console.warn('[Electron] 注册全局快捷键异常:', err)
+  }
+})

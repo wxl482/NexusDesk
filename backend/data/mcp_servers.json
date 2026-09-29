@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "fetch": {
+      "id": "fetch",
+      "name": "Web Content Fetcher (官方 MCP)",
+      "transport": "stdio",
+      "command": "python3",
+      "args": [
+        "-m",
+        "mcp.server.fastmcp"
+      ],
+      "enabled": false,
+      "description": "基于官方 MCP 规范的外部网页内容与 Markdown 提取服务"
+    }
+  }
+}

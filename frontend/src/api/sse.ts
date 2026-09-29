@@ -29,6 +29,10 @@ export interface StreamCallbacks {
   onToolError?: (toolName: string, errorMsg: string) => void
   /** LangGraph 节点生命周期状态流转 */
   onNodeChange: (nodeName: string) => void
+  /** 智能模型动态路由通知 */
+  onModelRouted?: (info: { model: string; tier?: string; reason?: string }) => void
+  /** 长程任务规划步骤更新 */
+  onPlan?: (plan: any[]) => void
   /** 异常处理 */
   onError: (errorMsg: string, hint?: string) => void
   /** 流式完成 */
@@ -153,6 +157,16 @@ export class SSEChatClient {
         break
       case 'node_start':
         callbacks.onNodeChange(data.node)
+        break
+      case 'model_routed':
+        callbacks.onModelRouted?.({
+          model: data.model,
+          tier: data.tier,
+          reason: data.reason,
+        })
+        break
+      case 'plan':
+        callbacks.onPlan?.(data.plan)
         break
       case 'error':
         callbacks.onError(data.error, data.hint)

@@ -22,9 +22,10 @@ from app.agents.compression import (
     should_trigger_compression,
     compress_history_messages,
 )
-from app.tools.base import DEFAULT_TOOLS
+from app.tools.base import DEFAULT_TOOLS, get_all_tools
 from app.llm.factory import LLMFactory
 from app.agents.laya_service import laya_service
+from app.agents.planner import generate_task_plan, should_decompose_goal
 
 # 全局共享内存检查点（Checkpointer），用于支持多轮连续对话上下文存储
 memory_checkpointer = MemorySaver()
@@ -192,7 +193,7 @@ def create_agent_graph(
     4. 工具绑定通过 LangChain ChatOpenAI.bind_tools(DEFAULT_TOOLS) 挂载。
     5. 执行链路基于 LangGraph StateGraph、ToolNode 与 tools_condition 闭环调度。
     """
-    # 1. 实例化 LangChain 聊天模型
+    # 1. 实例化 LangChain 聊天模型与动态工具箱（融合原生系统工具与 MCP 外部生态工具）
     base_llm = LLMFactory.get_chat_model(
         model=model,
         base_url=base_url,
@@ -200,8 +201,8 @@ def create_agent_graph(
         temperature=temperature,
         streaming=True,
     )
-    # 为模型绑定 LangChain 工具箱
-    llm_with_tools = base_llm.bind_tools(DEFAULT_TOOLS)
+    active_tools = get_all_tools()
+    llm_with_tools = base_llm.bind_tools(active_tools)
 
     # 2. 基于 LangChain LCEL 构建推理链 (Prompt | LLM)
     chat_lcel_chain = AGENT_PROMPT_TEMPLATE | base_llm
@@ -281,6 +282,42 @@ def create_agent_graph(
             "tool_steps": 0,  # 新会话轮次重置工具执行步数
         }
 
+    # 3.8 长程任务规划状态机节点 (Planner Node)
+    async def planner_node(state: AgentState) -> Dict[str, Any]:
+        """
+        长程任务规划状态机节点 (Plan-and-Solve)：
+        针对复杂多步目标自动生成结构化执行规划清单，并注入状态图生命周期。
+        """
+        mode = state.get("mode", "react")
+        if state.get("plan"):
+            return {}
+
+        messages = state.get("messages", [])
+        last_human_text = ""
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage) or getattr(msg, "type", "") in ["human", "user"]:
+                if isinstance(msg.content, str):
+                    last_human_text = msg.content
+                elif isinstance(msg.content, list):
+                    for part in msg.content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            last_human_text += part.get("text", "")
+                break
+
+        if not last_human_text.strip() or not should_decompose_goal(last_human_text, mode):
+            return {}
+
+        plan = await generate_task_plan(
+            goal=last_human_text,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+        )
+        if plan and len(plan) > 0:
+            plan[0]["status"] = "running"
+            return {"plan": plan}
+        return {}
+
     # 4. 核心智能体推理节点 (Agent Node)
     async def agent_node(state: AgentState) -> Dict[str, Any]:
         mode = state.get("mode", "react")
@@ -305,6 +342,16 @@ def create_agent_graph(
             current_agent = state.get("active_agent") or "coder"
             sub_prompt = SUB_AGENT_PROMPTS.get(current_agent, SUB_AGENT_PROMPTS["coder"])
             effective_system_prompt += sub_prompt
+
+        # 若存在长程任务规划清单 (Plan-and-Solve)，将其结构化注入当前提示词中
+        plan = state.get("plan")
+        if plan and isinstance(plan, list):
+            plan_lines = ["\n\n========================================", "【当前长程任务执行计划 (Plan-and-Solve)】"]
+            for step in plan:
+                status_icon = "⏳" if step.get("status") == "pending" else ("🔄" if step.get("status") == "running" else "✅")
+                plan_lines.append(f"{status_icon} 步骤 {step.get('id')}: {step.get('title')} ({step.get('description', '')})")
+            plan_lines.append("请围绕当前正在执行的步骤有序推进工具调用与分析！\n========================================")
+            effective_system_prompt += "\n".join(plan_lines)
 
         # 结合当前操作批准权限策略注入安全规范
         approval_mode = state.get("approval_mode", "smart")
@@ -420,7 +467,7 @@ def create_agent_graph(
     workflow = StateGraph(AgentState)
 
     # 包装 ToolNode 并记录步数，防止死循环
-    base_tool_node = ToolNode(DEFAULT_TOOLS, handle_tool_errors=True)
+    base_tool_node = ToolNode(active_tools, handle_tool_errors=True)
 
     async def custom_tools_node(state: AgentState) -> Dict[str, Any]:
         """执行外部工具调用并递增计数器"""
@@ -436,16 +483,18 @@ def create_agent_graph(
             return END
         return tools_condition(state)
 
-    # 添加压缩前置节点、Laya 决策门禁节点、推理节点与工具节点
+    # 添加压缩前置节点、Laya 决策门禁节点、规划状态机节点、推理节点与工具节点
     workflow.add_node("compress_node", compress_node)
     workflow.add_node("laya_gate_node", laya_gate_node)
+    workflow.add_node("planner_node", planner_node)
     workflow.add_node("agent", agent_node)
     workflow.add_node("tools", custom_tools_node)
 
-    # 起始连接：START -> 压缩前置 -> Laya 决策门禁 -> 核心 agent
+    # 起始连接：START -> 压缩前置 -> Laya 决策门禁 -> 任务规划状态机 -> 核心 agent
     workflow.add_edge(START, "compress_node")
     workflow.add_edge("compress_node", "laya_gate_node")
-    workflow.add_edge("laya_gate_node", "agent")
+    workflow.add_edge("laya_gate_node", "planner_node")
+    workflow.add_edge("planner_node", "agent")
 
     # 动态条件路由
     workflow.add_conditional_edges(

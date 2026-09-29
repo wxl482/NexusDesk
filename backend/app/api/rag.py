@@ -1,7 +1,8 @@
 from typing import Optional, List
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, Query, HTTPException
 from pydantic import BaseModel, Field
 from app.rag.vector_engine import RAGEngine
+from app.rag.doc_parser import parse_document
 
 router = APIRouter(prefix="/api/rag", tags=["知识库与向量检索 (RAG)"])
 
@@ -9,20 +10,22 @@ class SearchRequest(BaseModel):
     """知识库相似度检索入参 Schema"""
     query: str = Field(..., description="语义检索文本")
     top_k: int = Field(default=4, description="返回的相关切片最大数量")
+    category: Optional[str] = Field(default=None, description="知识库分类/集合标签")
 
 class TextUploadRequest(BaseModel):
     """纯文本上传入库 Schema"""
     title: str = Field(..., description="文档标题")
     content: str = Field(..., description="文档正文内容")
+    category: Optional[str] = Field(default="default", description="知识库分类/集合标签")
 
 @router.get("/documents")
-async def list_documents():
+async def list_documents(category: Optional[str] = Query(None, description="分类过滤")):
     """
-    获取本地向量库中所有已持久化的文档元数据汇总列表。
+    获取本地向量库中所有已持久化的文档元数据汇总列表（支持按 category 分类过滤）。
     """
     engine = RAGEngine.get_instance()
-    docs = engine.list_documents()
-    return {"documents": docs, "total": len(docs)}
+    docs = engine.list_documents(category=category)
+    return {"documents": docs, "total": len(docs), "category": category}
 
 @router.post("/upload/text")
 async def upload_text(req: TextUploadRequest):
@@ -36,62 +39,53 @@ async def upload_text(req: TextUploadRequest):
         title=req.title or "未命名笔记",
         text=req.content,
         doc_type="text",
+        category=req.category or "default",
     )
     return result
 
 @router.post("/upload/file")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    category: Optional[str] = Form("default"),
+):
     """
-    上传本地文件（PDF、Markdown、TXT、代码文件等），解析文本并写入本地向量数据库。
+    上传本地文件（PDF、Word .docx、Excel .xlsx、CSV、Markdown、TXT、代码文件等），
+    使用工业级多格式解析器解析正文与结构化表格，并写入向量库与 BM25 索引。
     """
     try:
         content_bytes = await file.read()
         filename = file.filename or "uploaded_file"
-        ext = filename.split(".")[-1].lower() if "." in filename else ""
 
-        if ext == "pdf" or (file.content_type and "pdf" in file.content_type):
-            import io
-            import pypdf
-            reader = pypdf.PdfReader(io.BytesIO(content_bytes))
-            if reader.is_encrypted:
-                try:
-                    reader.decrypt("")
-                except Exception:
-                    pass
-            pages_text = []
-            for i, page in enumerate(reader.pages):
-                try:
-                    t = page.extract_text() or ""
-                    if t.strip():
-                        pages_text.append(f"--- [PDF 第 {i+1} 页] ---\n{t.strip()}")
-                except Exception:
-                    pass
-            text_content = "\n\n".join(pages_text)
-        else:
-            # 按 UTF-8 编码解码为字符串
-            text_content = content_bytes.decode("utf-8", errors="replace")
+        parsed = parse_document(content_bytes, filename)
+        if not parsed.get("success") or not parsed.get("text"):
+            err_msg = parsed.get("error", "上传文件为空或无法解码为有效文本。")
+            raise HTTPException(status_code=400, detail=f"文件解析失败: {err_msg}")
 
-        if not text_content.strip():
-            raise HTTPException(status_code=400, detail="上传文件为空或无法解码为有效文本。")
+        text_content = parsed["text"]
+        doc_type = parsed.get("doc_type", "file")
 
         engine = RAGEngine.get_instance()
         result = engine.add_text_document(
             title=filename,
             text=text_content,
-            doc_type=ext if ext else "file",
+            doc_type=doc_type,
+            category=category or "default",
         )
+        result["parsed_type"] = doc_type
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件处理发生异常: {str(e)}")
 
 @router.post("/search")
 async def search_knowledge(req: SearchRequest):
     """
-    知识库语义检索调试接口：返回与输入 query 最相似的文本片段及其向量距离。
+    知识库语义检索调试接口：返回与输入 query 最相似的文本片段及其向量距离与 BM25/RRF 评分。
     """
     engine = RAGEngine.get_instance()
-    results = engine.search_similar(query=req.query, top_k=req.top_k)
-    return {"query": req.query, "results": results}
+    results = engine.search_similar(query=req.query, top_k=req.top_k, category=req.category)
+    return {"query": req.query, "category": req.category, "results": results}
 
 @router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str):

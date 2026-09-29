@@ -32,6 +32,8 @@ import {
   CornerDownLeft,
   Info,
   Folder,
+  Printer,
+  Pencil,
 } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chat'
 import { useSettingsStore } from '../stores/settings'
@@ -126,6 +128,52 @@ const exportConversationMarkdown = () => {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+// 导出 JSON 结构化数据
+const exportConversationJSON = () => {
+  if (chatStore.messages.length === 0) return
+  showExportMenu.value = false
+  const title = currentSessionTitle.value || '对话记录'
+  const dateStr = new Date().toISOString().slice(0, 10)
+  const data = {
+    title,
+    mode: chatStore.activeMode,
+    exportedAt: new Date().toISOString(),
+    messages: chatStore.messages,
+  }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${title.replace(/[\/\\?%*:|"<>]/g, '_')}_${dateStr}.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+// 打印 / 导出为 PDF
+const printConversationPDF = () => {
+  showExportMenu.value = false
+  window.print()
+}
+
+// 导出菜单状态
+const showExportMenu = ref(false)
+const exportMenuRef = ref<HTMLElement | null>(null)
+
+// 人在回路：参数/指令就地修改状态
+const isEditingApprovalTarget = ref(false)
+const editedApprovalTarget = ref('')
+
+const toggleEditApprovalTarget = () => {
+  if (!isEditingApprovalTarget.value) {
+    editedApprovalTarget.value = pendingApprovalMessage.value?.approvalData?.target || ''
+    isEditingApprovalTarget.value = true
+  } else {
+    isEditingApprovalTarget.value = false
+  }
 }
 
 // 滚动容器引用
@@ -765,7 +813,9 @@ const handleApprovePendingApproval = (rememberSimilar: boolean = false) => {
   if (!pendingApprovalMessage.value) return
   isPendingApprovalMenuOpen.value = false
   const msgId = pendingApprovalMessage.value.id
-  chatStore.approveOperation(msgId, rememberSimilar)
+  const customTarget = isEditingApprovalTarget.value ? editedApprovalTarget.value.trim() : undefined
+  chatStore.approveOperation(msgId, rememberSimilar, customTarget)
+  isEditingApprovalTarget.value = false
   scrollToBottomSmooth()
   nextTick(() => {
     textareaRef.value?.focus()
@@ -775,6 +825,7 @@ const handleApprovePendingApproval = (rememberSimilar: boolean = false) => {
 const handleRejectPendingApproval = () => {
   if (!pendingApprovalMessage.value) return
   isPendingApprovalMenuOpen.value = false
+  isEditingApprovalTarget.value = false
   const msgId = pendingApprovalMessage.value.id
   chatStore.rejectOperation(msgId)
   scrollToBottomSmooth()
@@ -786,6 +837,7 @@ const handleRejectPendingApproval = () => {
 // 键盘快捷键监听：当存在待确认操作时，Esc 拒绝，Enter 允许
 const handleApprovalKeyDown = (e: KeyboardEvent) => {
   if (!pendingApprovalMessage.value) return
+  if (isEditingApprovalTarget.value) return // 用户正在就地编辑参数，不拦截按键
 
   if (e.key === 'Escape') {
     e.preventDefault()
@@ -803,6 +855,9 @@ const handleClickOutside = (e: MouseEvent) => {
   }
   if (approvalDropdownRef.value && !approvalDropdownRef.value.contains(e.target as Node)) {
     showApprovalDropdown.value = false
+  }
+  if (exportMenuRef.value && !exportMenuRef.value.contains(e.target as Node)) {
+    showExportMenu.value = false
   }
   if (isPendingApprovalMenuOpen.value) {
     isPendingApprovalMenuOpen.value = false
@@ -842,15 +897,56 @@ onUnmounted(() => {
 
       <!-- 右侧：导出对话与清空消息按钮 -->
       <div class="flex items-center gap-1.5 window-no-drag">
-        <button
-          v-if="chatStore.messages.length > 0"
-          @click="exportConversationMarkdown"
-          class="flex items-center gap-1 px-2 py-1 rounded-lg text-gray-500 hover:text-gray-800 dark:text-zinc-400 dark:hover:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 text-xs transition-colors cursor-pointer"
-          title="导出当前会话为 Markdown 文件"
-        >
-          <Download class="w-3.5 h-3.5" />
-          <span>导出</span>
-        </button>
+        <!-- 多格式会话导出下拉菜单 (Markdown / JSON / Print-PDF) -->
+        <div ref="exportMenuRef" class="relative" v-if="chatStore.messages.length > 0">
+          <button
+            @click.stop="showExportMenu = !showExportMenu"
+            class="flex items-center gap-1 px-2.5 py-1 rounded-lg text-gray-500 hover:text-gray-800 dark:text-zinc-400 dark:hover:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 text-xs transition-colors cursor-pointer"
+            title="导出当前会话"
+          >
+            <Download class="w-3.5 h-3.5" />
+            <span>导出</span>
+            <ChevronDown class="w-3 h-3 transition-transform duration-150" :class="{ 'rotate-180': showExportMenu }" />
+          </button>
+
+          <!-- 导出选项气泡卡片 -->
+          <transition
+            enter-active-class="transition duration-100 ease-out"
+            enter-from-class="opacity-0 scale-95 -translate-y-1"
+            enter-to-class="opacity-100 scale-100 translate-y-0"
+            leave-active-class="transition duration-75 ease-in"
+            leave-from-class="opacity-100 scale-100 translate-y-0"
+            leave-to-class="opacity-0 scale-95 -translate-y-1"
+          >
+            <div
+              v-if="showExportMenu"
+              class="absolute right-0 top-full mt-1.5 w-44 bg-white dark:bg-zinc-900 border border-gray-200/90 dark:border-zinc-800 rounded-xl shadow-xl p-1.5 z-50 select-none text-xs"
+              @click.stop
+            >
+              <button
+                @click="exportConversationMarkdown(); showExportMenu = false"
+                class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-gray-700 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors text-left cursor-pointer"
+              >
+                <FileText class="w-3.5 h-3.5 text-blue-500" />
+                <span>Markdown (.md)</span>
+              </button>
+              <button
+                @click="exportConversationJSON"
+                class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-gray-700 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors text-left cursor-pointer"
+              >
+                <FileCode class="w-3.5 h-3.5 text-emerald-500" />
+                <span>结构化 JSON (.json)</span>
+              </button>
+              <button
+                @click="printConversationPDF"
+                class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-gray-700 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors text-left cursor-pointer"
+              >
+                <Printer class="w-3.5 h-3.5 text-purple-500" />
+                <span>打印 / 另存为 PDF</span>
+              </button>
+            </div>
+          </transition>
+        </div>
 
         <button
           v-if="chatStore.messages.length > 0"
@@ -926,11 +1022,13 @@ onUnmounted(() => {
 
       <!-- 历史与实时消息列表 (底部预留 pb-36 保证滑至底部时不被输入框遮挡) -->
       <div v-else ref="messagesListRef" class="max-w-4xl mx-auto px-4 pt-4 pb-36 space-y-4 w-full">
-        <ChatMessage
+        <div
           v-for="msg in chatStore.messages"
           :key="msg.id"
-          :message="msg"
-        />
+          class="message-item-container w-full"
+        >
+          <ChatMessage :message="msg" />
+        </div>
       </div>
     </div>
 
@@ -987,9 +1085,21 @@ onUnmounted(() => {
               {{ pendingApprovalQuestion }}
             </div>
 
-            <!-- 3. 目标命令或路径 (如: mkdir -p ~/Desktop/55) -->
+            <!-- 3. 目标命令或路径 (支持人在回路就地编辑修改) -->
+            <div v-if="isEditingApprovalTarget" class="mb-4">
+              <div class="flex items-center gap-1.5 text-xs text-cyan-600 dark:text-cyan-400 font-medium mb-1.5">
+                <Pencil class="w-3.5 h-3.5" />
+                <span>人在回路：就地修改执行参数 / 终端命令</span>
+              </div>
+              <textarea
+                v-model="editedApprovalTarget"
+                rows="2"
+                class="w-full font-mono text-xs p-2.5 rounded-xl border border-cyan-500/80 bg-cyan-50/20 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 outline-none focus:ring-1 focus:ring-cyan-500 transition-all select-text"
+                placeholder="在此修改待执行的指令或路径参数..."
+              ></textarea>
+            </div>
             <div
-              v-if="pendingApprovalMessage.approvalData?.target"
+              v-else-if="pendingApprovalMessage.approvalData?.target"
               class="font-mono text-xs text-zinc-400 dark:text-zinc-500 select-all mb-4 break-all leading-normal"
             >
               {{ pendingApprovalMessage.approvalData.target }}
@@ -997,6 +1107,17 @@ onUnmounted(() => {
 
             <!-- 4. 底部操作区 (完美还原参考图细节：拒绝 Esc 与 允许一次 ↵ | v) -->
             <div class="flex items-center justify-end gap-2.5 relative">
+              <!-- 修改参数按钮 (人在回路 HITL 参数调整) -->
+              <button
+                @click="toggleEditApprovalTarget"
+                type="button"
+                class="h-8 px-3 rounded-full border border-gray-200/90 dark:border-zinc-700 bg-white hover:bg-gray-100 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                :title="isEditingApprovalTarget ? '取消编辑参数' : '人在回路：先修改指令参数再批准执行'"
+              >
+                <Pencil class="w-3 h-3 text-zinc-500" />
+                <span>{{ isEditingApprovalTarget ? '取消编辑' : '修改参数' }}</span>
+              </button>
+
               <!-- 拒绝按钮 (支持 Esc 快捷键) -->
               <button
                 @click="handleRejectPendingApproval"
@@ -1375,3 +1496,39 @@ onUnmounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 虚拟渲染与长列表性能优化：大幅降低数百条长消息滚动渲染压力 */
+.message-item-container {
+  content-visibility: auto;
+  contain-intrinsic-size: 1px 120px;
+}
+
+/* 打印与原生另存为 PDF 专属精美排版优化 */
+@media print {
+  header,
+  aside,
+  nav,
+  .window-drag-region,
+  .window-no-drag,
+  .pointer-events-none,
+  .pointer-events-auto,
+  button {
+    display: none !important;
+  }
+
+  body, html, #app, main, .select-text {
+    background: #ffffff !important;
+    color: #111827 !important;
+    overflow: visible !important;
+    height: auto !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .markdown-body {
+    font-size: 12pt !important;
+    line-height: 1.6 !important;
+  }
+}
+</style>

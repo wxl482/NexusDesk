@@ -15,6 +15,7 @@ from langchain_core.tools import tool
 
 from app.core.config import settings
 from app.core.logger import logger
+from app.rag.hybrid_retriever import ChineseBM25Retriever, HybridRAGFusion
 
 
 class ZhipuEmbeddings(Embeddings):
@@ -23,12 +24,13 @@ class ZhipuEmbeddings(Embeddings):
     基于标准 OpenAI 兼容协议接入智谱开放平台，输出 2048 维高精度稠密向量。
     """
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        self.api_key = api_key or settings.ZHIPUAI_API_KEY
+        self.api_key = api_key or settings.ZHIPUAI_API_KEY or os.getenv("ZHIPUAI_API_KEY", "")
         self.model = model or settings.EMBEDDING_MODEL
         self.base_url = "https://open.bigmodel.cn/api/paas/v4/"
+        key_to_use = self.api_key if (self.api_key and self.api_key.strip()) else "sk-no-key-provided"
         self._client = OpenAIEmbeddings(
             model=self.model,
-            api_key=self.api_key,
+            api_key=key_to_use,
             base_url=self.base_url,
             check_embedding_ctx_length=False,
         )
@@ -99,8 +101,8 @@ class KnowledgeBackupManager:
                 self._write_json(self.primary_file, data)
         return data or {"version": "1.0", "updated_at": time.time(), "documents": {}}
 
-    def save_document_snapshot(self, doc_id: str, title: str, doc_type: str, chunks: List[Document]):
-        """双写保存文档及其切片快照"""
+    def save_document_snapshot(self, doc_id: str, title: str, doc_type: str, chunks: List[Document], category: str = "default"):
+        """双写保存文档及其切片快照（含多知识库/分类标识）"""
         data = self.load_snapshot()
         data["updated_at"] = time.time()
         chunk_data = [
@@ -115,6 +117,7 @@ class KnowledgeBackupManager:
             "doc_id": doc_id,
             "title": title,
             "doc_type": doc_type,
+            "category": category,
             "created_at": time.time(),
             "chunks_count": len(chunks),
             "chunks": chunk_data,
@@ -131,15 +134,19 @@ class KnowledgeBackupManager:
             self._write_json(self.primary_file, data)
             self._write_json(self.redundant_file, data)
 
-    def list_documents(self) -> List[Dict[str, Any]]:
-        """高速读取文档元数据列表"""
+    def list_documents(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
+        """高速读取文档元数据列表，支持分类过滤"""
         data = self.load_snapshot()
         results = []
         for doc_id, info in data.get("documents", {}).items():
+            doc_cat = info.get("category", "default")
+            if category and doc_cat != category:
+                continue
             results.append({
                 "doc_id": doc_id,
                 "title": info.get("title", "未命名文档"),
                 "doc_type": info.get("doc_type", "text"),
+                "category": doc_cat,
                 "chunks": info.get("chunks_count", len(info.get("chunks", []))),
                 "created_at": info.get("created_at", 0),
             })
@@ -206,15 +213,26 @@ class RAGEngine:
             auto_id=True,
         )
 
-        # 5. 配置 LangChain 中文字符友好的分块切割器
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=600,
-            chunk_overlap=80,
+        # 5. 配置 Parent-Child 双层分块切割器（父切片宽上下文 + 子切片高精度索引）
+        self.parent_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1200,
+            chunk_overlap=150,
             separators=["\n\n", "\n", "。", "！", "？", ".", " ", ""],
         )
+        self.child_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=300,
+            chunk_overlap=50,
+            separators=["\n\n", "\n", "。", "！", "？", ".", " ", ""],
+        )
+        self.text_splitter = self.child_splitter
 
-        # 6. 执行启动时自愈检查（方案 C 自动防丢容灾）
+        # 6. 初始化 BM25 稀疏检索器与 RRF 倒数排名融合器
+        self.bm25_retriever = ChineseBM25Retriever()
+        self.hybrid_fusion = HybridRAGFusion(rrf_k=60)
+
+        # 7. 执行启动时自愈检查与 BM25 索引构建
         self.auto_recover_if_needed()
+        self._refresh_bm25_index()
 
     @classmethod
     def get_instance(cls) -> "RAGEngine":
@@ -222,6 +240,24 @@ class RAGEngine:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
+
+    def _refresh_bm25_index(self):
+        """从本地备份快照中汇总所有切片并构建 BM25 关键词倒排索引"""
+        try:
+            snapshot_docs = self.backup_mgr.load_snapshot().get("documents", {})
+            all_chunks = []
+            for doc_id, doc_info in snapshot_docs.items():
+                category = doc_info.get("category", "default")
+                for c in doc_info.get("chunks", []):
+                    c_meta = dict(c.get("metadata", {}))
+                    c_meta["category"] = category
+                    all_chunks.append({
+                        "page_content": c.get("page_content", ""),
+                        "metadata": c_meta
+                    })
+            self.bm25_retriever.build_index(all_chunks)
+        except Exception as e:
+            logger.warning(f"[RAGEngine] 刷新 BM25 索引异常: {e}")
 
     def auto_recover_if_needed(self):
         """
@@ -243,7 +279,7 @@ class RAGEngine:
             logger.warning(f"[RAGEngine] 自动自愈检查跳过: {e}")
 
     def rebuild_from_snapshot(self) -> int:
-        """从快照重新生成并写入所有向量到 Milvus"""
+        """从快照重新生成并写入所有向量到 Milvus，并同步重建 BM25 索引"""
         snapshot_docs = self.backup_mgr.load_snapshot().get("documents", {})
         total_chunks = 0
         for doc_id, doc_info in snapshot_docs.items():
@@ -258,6 +294,7 @@ class RAGEngine:
             if docs_to_add:
                 self.vector_store.add_documents(docs_to_add)
                 total_chunks += len(docs_to_add)
+        self._refresh_bm25_index()
         logger.info(f"[RAGEngine] 灾备自愈重建完成！成功恢复 {len(snapshot_docs)} 篇文档，共 {total_chunks} 个切片。")
         return total_chunks
 
@@ -268,29 +305,50 @@ class RAGEngine:
         """
         return self.vector_store.as_retriever(search_kwargs={"k": top_k})
 
-    def add_text_document(self, title: str, text: str, doc_type: str = "text") -> Dict[str, Any]:
+    def add_text_document(self, title: str, text: str, doc_type: str = "text", category: str = "default") -> Dict[str, Any]:
         """
-        切分正文，封装为 LangChain Document，持久化到 Milvus 并同步双写灾备快照。
+        【P0 父子切片与混合索引入库】
+        1. 使用 parent_splitter 切割大上下文切片 (~1200 字符)；
+        2. 对每个父切片，使用 child_splitter 切割高精度子切片 (~300 字符)；
+        3. 子切片向量化写入 Milvus 稠密库（附带 parent_content 元数据）；
+        4. 同步持久化灾备快照并更新 BM25 关键词倒排索引。
         """
-        raw_chunks = self.text_splitter.split_text(text)
-        if not raw_chunks:
+        text_clean = text.strip()
+        if not text_clean:
             return {"success": False, "chunks": 0, "message": "文档内容为空或无有效文本。"}
 
         doc_id = str(uuid.uuid4())
-        
-        # 构造 LangChain 标准 Document 实体列表
-        documents: List[Document] = [
-            Document(
-                page_content=chunk,
-                metadata={
-                    "doc_id": doc_id,
-                    "title": title,
-                    "doc_type": doc_type,
-                    "chunk_index": i,
-                }
-            )
-            for i, chunk in enumerate(raw_chunks)
-        ]
+        parent_chunks = self.parent_splitter.split_text(text_clean)
+        if not parent_chunks:
+            parent_chunks = [text_clean]
+
+        documents: List[Document] = []
+        overall_idx = 0
+
+        for p_idx, p_content in enumerate(parent_chunks):
+            # 对单个父块再切分子切片
+            if len(p_content) <= 350:
+                c_chunks = [p_content]
+            else:
+                c_chunks = self.child_splitter.split_text(p_content)
+                if not c_chunks:
+                    c_chunks = [p_content]
+
+            for c_content in c_chunks:
+                doc_obj = Document(
+                    page_content=c_content,
+                    metadata={
+                        "doc_id": doc_id,
+                        "title": title,
+                        "doc_type": doc_type,
+                        "category": category,
+                        "chunk_index": overall_idx,
+                        "parent_id": f"{doc_id}_p{p_idx}",
+                        "parent_content": p_content,
+                    }
+                )
+                documents.append(doc_obj)
+                overall_idx += 1
 
         # 1. 批量写入 Milvus
         self.vector_store.add_documents(documents)
@@ -300,91 +358,97 @@ class RAGEngine:
             doc_id=doc_id,
             title=title,
             doc_type=doc_type,
-            chunks=documents
+            chunks=documents,
+            category=category,
         )
 
-        logger.info(f"[RAGEngine] 文档 《{title}》 成功存入 Milvus 与灾备快照 (切片: {len(documents)})")
+        # 3. 动态刷新内存中的 BM25 关键词倒排索引
+        self._refresh_bm25_index()
+
+        logger.info(f"[RAGEngine] 文档 《{title}》 成功存入 Milvus 与灾备快照 (父切片: {len(parent_chunks)}, 子切片: {len(documents)}, 分类: {category})")
 
         return {
             "success": True,
             "doc_id": doc_id,
             "title": title,
+            "category": category,
+            "parent_chunks_count": len(parent_chunks),
             "chunks_count": len(documents),
         }
 
-    def search_similar(self, query: str, top_k: int = 4, score_threshold: float = 1.6) -> List[Dict[str, Any]]:
+    def search_similar(
+        self,
+        query: str,
+        top_k: int = 4,
+        category: Optional[str] = None,
+        score_threshold: float = 1.6
+    ) -> List[Dict[str, Any]]:
         """
-        执行 Milvus 相似度检索，带语义距离过滤、关键词加权与内容去重。
+        【P0 工业级 Milvus + BM25 混合检索与 RRF 融合排序】
+        1. 稠密多维语义召回 (Milvus + 智谱 embedding-3)；
+        2. 稀疏关键词精准召回 (Jieba + BM25Okapi)；
+        3. Reciprocal Rank Fusion (RRF) 倒数排名打分重排；
+        4. 自动解包父切片 (Parent-Child Chunking)，向模型呈现实质性丰富上下文。
         """
         candidate_k = max(top_k * 3, 6)
+
+        # 1. 稠密向量检索
+        dense_results: List[Dict[str, Any]] = []
         try:
             raw_results = self.vector_store.similarity_search_with_score(query, k=candidate_k)
+            for doc, score in raw_results:
+                dist = float(score)
+                meta = doc.metadata or {}
+                doc_cat = meta.get("category", "default")
+                if category and doc_cat != category:
+                    continue
+                if dist > score_threshold:
+                    continue
+                dense_results.append({
+                    "content": doc.page_content,
+                    "title": meta.get("title", "未知来源"),
+                    "doc_id": meta.get("doc_id", ""),
+                    "category": doc_cat,
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "parent_content": meta.get("parent_content"),
+                    "distance": round(dist, 4),
+                })
         except Exception as e:
-            logger.error(f"[RAGEngine] Milvus 检索失败: {e}")
-            return []
-        
-        if not raw_results:
-            return []
+            logger.error(f"[RAGEngine] Milvus 稠密检索异常: {e}")
 
-        # 提取查询中的关键词 (长度 >= 2) 用于关键词命中加权
-        keywords = [w.strip().lower() for w in query.split() if len(w.strip()) >= 2]
-        
-        scored_candidates = []
-        for doc, score in raw_results:
-            dist = float(score)
-            content_clean = doc.page_content.strip()
-            # 过滤超远距离低相关性噪音 (Milvus L2/Cosine 距离适应)
-            if dist > score_threshold:
-                continue
-                
-            # 关键词精准命中奖励 (降低有效距离，提升优先级)
-            bonus = 0.0
-            content_lower = content_clean.lower()
-            for kw in keywords:
-                if kw in content_lower:
-                    bonus += 0.08
-            adjusted_score = max(0.0, dist - bonus)
-            scored_candidates.append((adjusted_score, doc, dist))
-            
-        # 按调整后的加权距离排序
-        scored_candidates.sort(key=lambda x: x[0])
-        
-        formatted = []
-        seen_texts = set()
-        for adj_score, doc, original_score in scored_candidates:
-            text_hash = hash(doc.page_content.strip())
-            if text_hash in seen_texts:
-                continue
-            seen_texts.add(text_hash)
-            
-            meta = doc.metadata or {}
-            formatted.append({
-                "content": doc.page_content,
-                "title": meta.get("title", "未知来源"),
-                "doc_id": meta.get("doc_id", ""),
-                "chunk_index": meta.get("chunk_index", 0),
-                "distance": round(original_score, 4),
-            })
-            if len(formatted) >= top_k:
-                break
-                
-        return formatted
+        # 2. 稀疏 BM25 关键词检索
+        sparse_results: List[Tuple[Dict[str, Any], float]] = []
+        try:
+            sparse_results = self.bm25_retriever.search(query, top_k=candidate_k, category=category)
+        except Exception as e:
+            logger.error(f"[RAGEngine] BM25 稀疏检索异常: {e}")
 
-    def list_documents(self) -> List[Dict[str, Any]]:
+        # 3. 若 BM25 与向量均有效，使用 RRF 混合融合算法
+        if dense_results or sparse_results:
+            fused = self.hybrid_fusion.fuse(dense_results, sparse_results, top_k=top_k)
+            if fused:
+                return fused
+
+        # 降级兜底：返回稠密检索结果前 top_k 条
+        return dense_results[:top_k]
+
+    def list_documents(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        获取知识库中所有文档的元数据概要列表。
+        获取知识库中所有文档的元数据概要列表，支持分类过滤。
         直接从快照管理器高速读取，极速响应。
         """
-        return self.backup_mgr.list_documents()
+        return self.backup_mgr.list_documents(category=category)
 
     def delete_document(self, doc_id: str) -> bool:
-        """从 Milvus 与灾备快照中同步删除指定文档"""
+        """从 Milvus 与灾备快照中同步删除指定文档，并更新 BM25 索引"""
         try:
             # 1. 从 Milvus 中删除切片
             expr = f'doc_id == "{doc_id}"'
             self.vector_store.delete(expr=expr)
             # 2. 从快照中删除
             self.backup_mgr.delete_document_snapshot(doc_id)
+            # 3. 刷新 BM25 索引
+            self._refresh_bm25_index()
             logger.info(f"[RAGEngine] 成功删除文档 doc_id={doc_id}")
             return True
         except Exception as e:
@@ -406,6 +470,7 @@ class RAGEngine:
                 drop_old=True,
             )
             self.backup_mgr.clear_all()
+            self._refresh_bm25_index()
             logger.info("[RAGEngine] 知识库已全部清空。")
         except Exception as e:
             logger.error(f"[RAGEngine] 清空知识库失败: {e}")

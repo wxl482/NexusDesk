@@ -62,9 +62,18 @@ async def chat_stream(req: ChatRequest):
     # 动态记录活跃会话并自动修剪超期 Checkpoint，杜绝后端内存膨胀
     _record_and_prune_threads(req.session_id)
 
+    # 智能模型动态路由 (Model Dynamic Router)
+    from app.llm.router import ModelRouter
+    routed_info = None
+    target_model = req.model
+    if not target_model or target_model in ["auto", "smart", "default", ""]:
+        route_res = ModelRouter.route_prompt(req.message, req.model)
+        target_model = route_res.get("model")
+        routed_info = route_res
+
     # 根据请求参数构建并编译对应的状态图
     app_graph = create_agent_graph(
-        model=req.model,
+        model=target_model,
         base_url=req.base_url,
         api_key=req.api_key,
         temperature=req.temperature,
@@ -100,11 +109,26 @@ async def chat_stream(req: ChatRequest):
         """SSE 异步事件生成器"""
         in_dsml_block = False
         try:
-            # 发送会话启动事件
+            # 发送会话启动事件与动态模型分流事件
             yield {
                 "event": "message",
-                "data": json.dumps({"type": "session_start", "session_id": req.session_id, "mode": req.mode})
+                "data": json.dumps({
+                    "type": "session_start",
+                    "session_id": req.session_id,
+                    "mode": req.mode,
+                    "model": target_model,
+                })
             }
+            if routed_info:
+                yield {
+                    "event": "message",
+                    "data": json.dumps({
+                        "type": "model_routed",
+                        "model": target_model,
+                        "tier": routed_info.get("tier"),
+                        "reason": routed_info.get("reason"),
+                    })
+                }
 
             # 监听 LangGraph v2 事件流
             async for event in app_graph.astream_events(input_state, config=config, version="v2"):
@@ -201,6 +225,18 @@ async def chat_stream(req: ChatRequest):
                             })
                         }
 
+                # 6. 长程任务规划状态机事件
+                elif kind == "on_chain_end" and name == "planner_node":
+                    output = data.get("output", {})
+                    if output and isinstance(output, dict) and output.get("plan"):
+                        yield {
+                            "event": "message",
+                            "data": json.dumps({
+                                "type": "plan",
+                                "plan": output.get("plan"),
+                            })
+                        }
+
 
 
             # 发送流式结束事件
@@ -226,53 +262,30 @@ async def chat_stream(req: ChatRequest):
 @router.post("/parse-file")
 async def parse_file(file: UploadFile = File(...)):
     """
-    解析用户上传的文件（支持 PDF、Markdown、纯文本、代码文件等），
-    提取纯文本内容与元数据，以便前端直接作为文档上下文传给 Agent。
+    解析用户上传的文件（支持 PDF、Word .docx、Excel .xlsx、CSV、Markdown、纯文本、代码文件等），
+    提取格式化 Markdown 内容与元数据，以便前端直接作为文档上下文传给 Agent。
     """
     try:
+        from app.rag.doc_parser import parse_document
         content_bytes = await file.read()
         filename = file.filename or "uploaded_file"
         file_size = len(content_bytes)
         ext = filename.split(".")[-1].lower() if "." in filename else ""
 
-        # 1. PDF 文件解析 (使用 pypdf 提取页面文字)
-        if ext == "pdf" or (file.content_type and "pdf" in file.content_type):
-            reader = pypdf.PdfReader(io.BytesIO(content_bytes))
-            if reader.is_encrypted:
-                try:
-                    reader.decrypt("")
-                except Exception:
-                    pass
-            pages_count = len(reader.pages)
-            pages_text = []
-            for i, page in enumerate(reader.pages):
-                try:
-                    extracted = page.extract_text() or ""
-                except Exception:
-                    extracted = ""
-                pages_text.append(f"--- [PDF 第 {i+1} 页] ---\n{extracted.strip()}")
-            full_text = "\n\n".join(pages_text)
-            if not full_text.replace("--- [PDF 第", "").strip():
-                full_text = f"（提示：该 PDF 共 {pages_count} 页，但未能提取到可选中文本内容，可能为纯扫描图片文档）"
-            return {
-                "name": filename,
-                "size": file_size,
-                "type": "pdf",
-                "is_pdf": True,
-                "pages": pages_count,
-                "text": full_text,
-            }
+        parsed = parse_document(content_bytes, filename)
+        if not parsed.get("success"):
+            raise HTTPException(status_code=400, detail=parsed.get("error", "文件解析失败"))
 
-        # 2. 文本与代码文件解析
-        text_content = content_bytes.decode("utf-8", errors="replace")
         return {
             "name": filename,
             "size": file_size,
-            "type": ext or "text",
-            "is_pdf": False,
+            "type": parsed.get("doc_type", ext or "text"),
+            "is_pdf": (ext == "pdf"),
             "pages": 1,
-            "text": text_content,
+            "text": parsed.get("text", ""),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"解析文件失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"文件解析失败: {str(e)}")

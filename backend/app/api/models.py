@@ -126,3 +126,19 @@ async def fetch_models(req: ModelFetchRequest):
             "models": [],
         }
 
+
+class ModelRouteRequest(BaseModel):
+    """模型路由请求 Schema"""
+    prompt: str = Field(..., description="用户输入的提问文本或提示词")
+    current_model: Optional[str] = Field(default=None, description="当前已选模型")
+
+
+@router.post("/route")
+async def route_model(req: ModelRouteRequest):
+    """
+    【智能动态模型路由】分析提示词意图特征，自动匹配最适合的极速 (Fast) 或深度推理 (Reasoning) 模型
+    """
+    from app.llm.router import ModelRouter
+    decision = ModelRouter.route_prompt(req.prompt, req.current_model)
+    return {"success": True, "decision": decision}
+

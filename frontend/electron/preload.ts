@@ -20,6 +20,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 唤起外部默认浏览器打开链接
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
+  // Raycast / Spotlight 悬浮小窗控制器
+  hideQuickBar: () => ipcRenderer.invoke('hide-quick-bar'),
+  openInMainWindow: (query?: string) => ipcRenderer.invoke('open-in-main-window', query),
+  onFocusChatQuery: (callback: (query: string) => void) => {
+    ipcRenderer.on('focus-chat-query', (_, query) => callback(query))
+  },
+
   // 桌面环境标识与操作系统平台
   isElectron: true,
   platform: process.platform,

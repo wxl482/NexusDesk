@@ -84,10 +84,13 @@ const handleSelectSession = (sessionId: string) => {
 </script>
 
 <template>
-  <div class="h-screen w-screen flex bg-gray-50 dark:bg-zinc-950 overflow-hidden text-gray-900 dark:text-zinc-100 select-none">
-    <!-- 侧边导航栏（包含对话列表）：在设置页面下完全隐藏，使设置页成为独立的新页面 -->
+  <div
+    class="h-screen w-screen flex bg-gray-50 dark:bg-zinc-950 overflow-hidden text-gray-900 dark:text-zinc-100 select-none"
+    :class="{ '!bg-transparent': route.path === '/quick-bar' }"
+  >
+    <!-- 侧边导航栏（包含对话列表）：在设置与快速小窗页面下完全隐藏 -->
     <aside
-      v-if="route.path !== '/settings'"
+      v-if="route.path !== '/settings' && route.path !== '/quick-bar'"
       class="w-64 flex-shrink-0 flex flex-col border-r border-gray-200 dark:border-zinc-800 bg-white/70 dark:bg-zinc-900/60 backdrop-blur-md"
     >
       <!-- macOS 原生红绿灯专属空间与顶部拖拽条（仅保留红绿灯与原生窗口拖动支持） -->

@@ -25,6 +25,11 @@ const routes = [
     name: 'settings',
     component: SettingsView,
   },
+  {
+    path: '/quick-bar',
+    name: 'quick-bar',
+    component: () => import('../views/QuickBarView.vue'),
+  },
 ]
 
 export const router = createRouter({

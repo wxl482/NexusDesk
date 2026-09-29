@@ -25,6 +25,17 @@ export interface AttachedDocMeta {
 }
 
 /**
+ * 长程任务规划步骤项
+ */
+export interface PlanStepItem {
+  id: number
+  title: string
+  description?: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  result?: string
+}
+
+/**
  * 对话单条消息结构体定义
  */
 export interface ChatMessage {
@@ -45,6 +56,14 @@ export interface ChatMessage {
   approvalData?: ApprovalData | null
   /** 用户审批状态：'pending' (待确认) | 'approved' (已批准) | 'rejected' (已拒绝) */
   approvalStatus?: 'pending' | 'approved' | 'rejected'
+  /** 长程任务规划状态列表 (Plan-and-Solve) */
+  plan?: PlanStepItem[]
+  /** 动态路由命中的模型与层级 */
+  routedModel?: {
+    model: string
+    tier?: string
+    reason?: string
+  }
 }
 
 /**
@@ -445,6 +464,14 @@ export const useChatStore = defineStore('chat', {
               }
             }
           },
+          // 收到模型动态路由分流通知
+          onModelRouted: (info) => {
+            targetMsg.routedModel = info
+          },
+          // 收到长程任务规划清单更新
+          onPlan: (plan) => {
+            targetMsg.plan = plan
+          },
           // LangGraph 节点变化
           onNodeChange: (nodeName) => {
             targetMsg.currentNode = nodeName
@@ -504,13 +531,13 @@ export const useChatStore = defineStore('chat', {
       )
     },
 
-    /** 确认并执行待批准的敏感操作 (静默无感执行，绝不在对话中生成多余的用户气泡或“已确认”废话) */
-    async approveOperation(messageId: string, rememberSimilar: boolean = false) {
+    /** 确认并执行待批准的敏感操作 (支持人在回路参数修改放行) */
+    async approveOperation(messageId: string, rememberSimilar: boolean = false, customTarget?: string) {
       const msg = this.messages.find(m => m.id === messageId)
       if (!msg || !msg.approvalData || this.isGenerating) return
 
       msg.approvalStatus = 'approved'
-      const target = msg.approvalData.target || ''
+      const target = (customTarget !== undefined && customTarget.trim() !== '') ? customTarget.trim() : (msg.approvalData.target || '')
       const settings = useSettingsStore()
 
       if (rememberSimilar) {
@@ -519,7 +546,9 @@ export const useChatStore = defineStore('chat', {
       }
 
       // 静默授权指令，提示大模型直接调用工具并汇报真实结果，严禁输出任何“好的”、“已确认”等客套开场白
-      const silentPrompt = `[系统授权指令] 用户已通过操作卡片允许执行该操作：${target}。请直接调用对应工具执行真实操作，严禁在回复中输出任何“已确认”、“好的”、“收到”等客套开场白，直接调用工具并在完成后汇报真实结果。`
+      const silentPrompt = customTarget && customTarget.trim() !== msg.approvalData.target
+        ? `[系统授权指令] 用户已审阅并修改了参数，允许执行修改后的操作：${target}。请直接调用对应工具执行此项修改后的操作，严禁在回复中输出任何“已确认”、“好的”、“收到”等客套开场白，直接调用工具并在完成后汇报真实结果。`
+        : `[系统授权指令] 用户已通过操作卡片允许执行该操作：${target}。请直接调用对应工具执行真实操作，严禁在回复中输出任何“已确认”、“好的”、“收到”等客套开场白，直接调用工具并在完成后汇报真实结果。`
 
       msg.isStreaming = true
       this.isGenerating = true

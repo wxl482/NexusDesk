@@ -69,7 +69,7 @@ class Settings(BaseSettings):
 
     class Config:
         """Pydantic 配置项"""
-        env_file = ".env"
+        env_file = [str(BASE_DIR / ".env"), ".env"]
         extra = "allow"
 
 
