@@ -112,8 +112,9 @@ export class PythonBackendManager {
 
     console.log(`[PythonManager] 正在启动 Python 后端: ${pythonBin} ${scriptPath} 端口: ${this.port}`)
 
+    const isDev = !app.isPackaged
     try {
-      this.process = spawn(pythonBin, [scriptPath, '--port', String(this.port), '--no-reload'], {
+      this.process = spawn(pythonBin, [scriptPath, '--port', String(this.port), isDev ? '--reload' : '--no-reload'], {
         cwd: backendCwd,
         detached: process.platform !== 'win32', // 创建独立进程组，退出时整组销毁
         env: {
