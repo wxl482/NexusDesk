@@ -67,49 +67,72 @@ def check_knowledge_base_hit(query: str) -> Optional[List[str]]:
 
 def get_knowledge_base_prompt_context(query: str = "") -> str:
     """
-    生成注入给大模型 System Prompt 的【知识库就绪状态与动态导引清单】。
-    
-    效果：
-    1. 让智能体清楚感知当前电脑里存了哪些私有参考资料（如《尚硅谷-01-LangChain概述.pdf》）；
-    2. 确立“本地知识库优先”检索原则，杜绝舍近求远直接去公网搜索；
-    3. 若当前提问精准命中某篇文档标题，输出高优先级的强命中行动提示。
+    两阶段动态感知与粗筛路由器 (Two-Stage Query-Time Knowledge Routing):
+    彻底解决海量文档 (> 100~10,000 篇) 时的 Prompt 膨胀与上下文污染问题。
+
+    扩展设计：
+    1. 【常态紧凑折叠】：
+       文档总数超过 5 篇时，绝对禁止向 Prompt 全量倾倒文档列表，仅输出宏观统计与分类摘要（< 30 Tokens）；
+    2. 【提问前置动态粗筛 (Top-3~Top-5)】：
+       根据当前提问对全部文档标题与关键词执行毫秒级倒排打分；仅当提问命中了相关文档时，才将最相关的 3~5 篇作为参考候选注入；
+    3. 【无关问题零注入】：
+       若用户提问的是常规闲聊、天气或无关任务，注入列表严格为 0，完全无 Token 浪费与干扰；
+    4. 【总文档少量 (<= 5) 时自动透出】：
+       对于本地仅有少量文档的场景，自动展示精简清单供模型清晰认知。
     """
     snapshot = load_knowledge_snapshot()
     docs = snapshot.get("documents", {})
     if not docs:
         return ""
 
-    doc_lines: List[str] = []
-    matched_titles: List[str] = []
-    clean_query = (query or "").lower()
+    total_count = len(docs)
+    categories: Dict[str, int] = {}
+    for d in docs.values():
+        cat = d.get("category", "default")
+        categories[cat] = categories.get(cat, 0) + 1
 
-    for doc_id, info in docs.items():
-        title = info.get("title", "未命名文档")
-        chunks = info.get("chunks_count", len(info.get("chunks", [])))
-        doc_type = info.get("doc_type", "doc")
-        category = info.get("category", "default")
-        doc_lines.append(f"- 《{title}》 (共 {chunks} 个切片, 类型: {doc_type}, 分类: {category})")
+    cat_items = [f"{k}({v}篇)" for k, v in list(categories.items())[:4]]
+    cat_summary = ", ".join(cat_items) if cat_items else "通用(全部)"
 
-        tokens = extract_keywords_from_title(title)
-        if clean_query and any(tok in clean_query for tok in tokens):
-            matched_titles.append(title)
+    # 执行提问相关性粗筛打分 (Top-K 候选截断，最大限制 5 篇)
+    clean_query = (query or "").lower().strip()
+    matched_candidates: List[Dict[str, Any]] = []
+
+    if clean_query:
+        for doc_id, info in docs.items():
+            title = info.get("title", "")
+            tokens = extract_keywords_from_title(title)
+            hits = [tok for tok in tokens if tok in clean_query]
+            if hits:
+                matched_candidates.append({
+                    "title": title,
+                    "hit_count": len(hits),
+                    "chunks": info.get("chunks_count", len(info.get("chunks", []))),
+                    "category": info.get("category", "default"),
+                })
+
+        # 按命中关键词匹配度倒序排序，严格截取最相关的 Top-5
+        matched_candidates.sort(key=lambda x: x["hit_count"], reverse=True)
+        matched_candidates = matched_candidates[:5]
 
     prompt_parts = [
         "\n\n========================================",
-        f"【本地知识库当前已就绪索引清单 (共 {len(docs)} 篇)】",
-        "当前系统本地私有知识库已建立多维语义切片与 BM25 倒排索引的资料：",
-        *doc_lines,
-        "\n【核心检索决策与知识库优先准则】：",
-        "1. 【知识库第一优先级】：当用户的提问涉及上述已上传文档的主题、技术体系、原理概念或材料时，必须【首选】调用 `query_knowledge_base` 工具检索真实内容作为核心依据！",
-        "2. 【严禁舍近求远】：如果本地知识库已有相关文档，绝对严禁直接调用 `web_search` 去公网搜索！必须优先以本地已收录的权威讲义与文档为准；",
-        "3. 【公网搜索仅作兜底】：只有当调用 `query_knowledge_base` 确认未检索到相关内容，或用户明确提出“联网搜索最新全网新闻/时效资讯”时，才可使用 `web_search` 补充。",
+        f"【本地私有知识库状态】：已建立索引共 {total_count} 篇文档 (覆盖分类: {cat_summary})。",
+        "【核心检索决策准则】：涉及专业知识、技术原理、业务规范或非时效性概念时，必须【优先调用 query_knowledge_base】检索本地文档事实，严禁直接去公网搜索 (web_search)；仅当本地未检索到或明确要求全网最新资讯时才用公网搜索。",
     ]
 
-    if matched_titles:
-        hit_str = "、".join([f"《{t}》" for t in matched_titles])
-        prompt_parts.append(
-            f"\n🎯【精准命中提示】：用户当前提问与本地文档 [{hit_str}] 高度相关！请立即调用 `query_knowledge_base` 工具检索其内容并给出专业解答！"
-        )
+    # 场景 A: 提问命中了具体候选文档（展示 Top-K 候选）
+    if matched_candidates:
+        prompt_parts.append("\n🎯【与当前提问最相关的本地候选参考文档 (前置粗筛命中)】：")
+        for cand in matched_candidates:
+            prompt_parts.append(f"- 《{cand['title']}》 (共 {cand['chunks']} 个切片, 分类: {cand['category']})")
+        prompt_parts.append("请【第一优先级】首先调用 `query_knowledge_base` 精准检索上述文档内容并回答！")
+
+    # 场景 B: 提问未命中特定文档，但总文档数很少 (<= 5 篇) 时展示极简概览
+    elif total_count <= 5:
+        prompt_parts.append("\n【当前已收录参考文档概览】：")
+        for doc_id, info in docs.items():
+            prompt_parts.append(f"- 《{info.get('title', '未知')}》 (分类: {info.get('category', 'default')})")
 
     prompt_parts.append("========================================\n")
     return "\n".join(prompt_parts)
