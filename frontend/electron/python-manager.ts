@@ -119,6 +119,8 @@ export class PythonBackendManager {
         env: {
           ...process.env,
           PYTHONUNBUFFERED: '1', // 禁用标准流缓冲，确保日志实时捕获
+          KMP_DUPLICATE_LIB_OK: 'TRUE', // 解决 macOS 下 Milvus-Lite 与 NumPy/PyTorch OpenMP 双重初始化冲突崩溃 (OMP: Error #15)
+          OMP_NUM_THREADS: '1',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       })

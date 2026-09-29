@@ -5,6 +5,10 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+# 防御性配置：避免 Milvus 与其他底层科学计算库在 macOS 下重复加载 libomp 冲突
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 # 引入 LangChain 核心向量检索与文档抽象
 from langchain_milvus import Milvus
 from langchain_openai import OpenAIEmbeddings

@@ -1,5 +1,10 @@
 import os
 import sys
+
+# 关键设置：避免 macOS / Linux 上 Milvus-Lite、NumPy、OpenCV 等 C++ 扩展库重复加载 libomp.dylib 导致 OMP: Error #15 致命崩溃 (SIGABRT)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 # 保证 numpy 模块在所有底层 AI/向量库之前完成全局顶层初始化，避免 Python 3.11 下的内部循环导入问题
 import numpy
 
