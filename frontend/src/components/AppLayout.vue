@@ -52,6 +52,26 @@ const cancelRename = () => {
   editingSessionId.value = null
 }
 
+// 自动更新状态管理 (electron-updater)
+const updateState = ref<{
+  hasUpdate: boolean
+  isDownloaded: boolean
+  version: string
+  percent?: number
+}>({
+  hasUpdate: false,
+  isDownloaded: false,
+  version: '',
+})
+
+const handleApplyUpdate = () => {
+  // @ts-ignore
+  if (window.electronAPI?.quitAndInstallUpdate) {
+    // @ts-ignore
+    window.electronAPI.quitAndInstallUpdate()
+  }
+}
+
 onMounted(() => {
   // 初始化首次会话并触发探活
   chatStore.initSession()
@@ -60,6 +80,30 @@ onMounted(() => {
   healthTimer = setInterval(() => {
     settingsStore.checkBackendHealth()
   }, 4000)
+
+  // 监听后台静默自动更新事件
+  // @ts-ignore
+  if (window.electronAPI?.onUpdaterMessage) {
+    // @ts-ignore
+    window.electronAPI.onUpdaterMessage((data: any) => {
+      if (data.status === 'available') {
+        updateState.value = {
+          hasUpdate: true,
+          isDownloaded: false,
+          version: data.version,
+        }
+      } else if (data.status === 'downloading') {
+        updateState.value.hasUpdate = true
+        updateState.value.percent = data.percent
+      } else if (data.status === 'downloaded') {
+        updateState.value = {
+          hasUpdate: true,
+          isDownloaded: true,
+          version: data.version,
+        }
+      }
+    })
+  }
 })
 
 onUnmounted(() => {
@@ -189,6 +233,32 @@ const handleSelectSession = (sessionId: string) => {
             />
           </template>
         </div>
+      </div>
+
+      <!-- 全自动静默更新就绪浮条 (electron-updater) -->
+      <div
+        v-if="updateState.hasUpdate"
+        class="mx-2 mb-2 p-2.5 rounded-xl border border-indigo-200/80 dark:border-indigo-800/80 bg-indigo-50/90 dark:bg-indigo-950/40 text-xs space-y-1.5 shadow-sm"
+      >
+        <div class="flex items-center justify-between">
+          <span class="font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1">
+            <span>🚀 发现新版本</span>
+            <span class="font-mono text-[10px]">v{{ updateState.version }}</span>
+          </span>
+          <span v-if="!updateState.isDownloaded" class="text-[10px] text-indigo-500">
+            下载中 {{ updateState.percent || 0 }}%
+          </span>
+        </div>
+        <p class="text-[11px] text-gray-500 dark:text-zinc-400">
+          {{ updateState.isDownloaded ? '更新包已静默就绪，重启即生效。' : '正在后台静默拉取更新包...' }}
+        </p>
+        <button
+          v-if="updateState.isDownloaded"
+          @click="handleApplyUpdate"
+          class="w-full py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-[11px] transition-colors cursor-pointer"
+        >
+          一键无感重启更新
+        </button>
       </div>
 
       <!-- 底部系统设置入口 -->

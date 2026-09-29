@@ -27,6 +27,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('focus-chat-query', (_, query) => callback(query))
   },
 
+  // 剪贴板快速读取
+  readClipboardText: () => ipcRenderer.invoke('read-clipboard-text'),
+
+  // 全自动更新控制与事件监听 (electron-updater)
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  quitAndInstallUpdate: () => ipcRenderer.invoke('quit-and-install-update'),
+  onUpdaterMessage: (callback: (data: any) => void) => {
+    ipcRenderer.on('updater-message', (_, data) => callback(data))
+  },
+
   // 桌面环境标识与操作系统平台
   isElectron: true,
   platform: process.platform,

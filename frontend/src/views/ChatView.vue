@@ -34,6 +34,7 @@ import {
   Folder,
   Printer,
   Pencil,
+  Zap,
 } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chat'
 import { useSettingsStore } from '../stores/settings'
@@ -254,6 +255,100 @@ const scrollToBottom = async (smooth = false) => {
   }, 180)
 }
 
+// ==========================================
+// 动态高度虚拟滚动引擎 (Dynamic Variable-Height Virtual Scroll)
+// 当单会话消息数较多 (> 20 条) 时自动开启视口裁剪，屏幕外 DOM 自动移出，保持 60fps 丝滑吸底
+// ==========================================
+const VIRTUAL_SCROLL_THRESHOLD = 20
+const BUFFER_PX = 1200
+const ESTIMATED_ITEM_HEIGHT = 140
+
+const measuredHeights = new Map<string, number>()
+const visibleStartIndex = ref(0)
+const visibleEndIndex = ref(0)
+const topSpacerHeight = ref(0)
+const bottomSpacerHeight = ref(0)
+
+const isVirtualScrollActive = computed(() => {
+  return chatStore.messages.length > VIRTUAL_SCROLL_THRESHOLD
+})
+
+const updateVirtualWindow = () => {
+  const msgs = chatStore.messages
+  if (!msgs || msgs.length <= VIRTUAL_SCROLL_THRESHOLD || !scrollContainer.value) {
+    visibleStartIndex.value = 0
+    visibleEndIndex.value = msgs.length - 1
+    topSpacerHeight.value = 0
+    bottomSpacerHeight.value = 0
+    return
+  }
+
+  const scrollTop = scrollContainer.value.scrollTop
+  const clientHeight = scrollContainer.value.clientHeight
+  const viewportTop = Math.max(0, scrollTop - BUFFER_PX)
+  const viewportBottom = scrollTop + clientHeight + BUFFER_PX
+
+  let accumulated = 0
+  let start = -1
+  let end = msgs.length - 1
+  let topHeight = 0
+  let bottomHeight = 0
+
+  for (let i = 0; i < msgs.length; i++) {
+    const id = msgs[i].id
+    const h = measuredHeights.get(id) || ESTIMATED_ITEM_HEIGHT
+    const itemTop = accumulated
+    const itemBottom = accumulated + h
+
+    if (start === -1) {
+      if (itemBottom >= viewportTop) {
+        start = i
+        topHeight = itemTop
+      }
+    }
+
+    if (itemTop > viewportBottom) {
+      end = i
+      for (let j = i; j < msgs.length; j++) {
+        bottomHeight += (measuredHeights.get(msgs[j].id) || ESTIMATED_ITEM_HEIGHT)
+      }
+      break
+    }
+
+    accumulated += h
+  }
+
+  if (start === -1) start = 0
+
+  // 保证正在生成阶段或吸底跟随状态时，底部消息始终处于渲染树中并完美吸底
+  if (chatStore.isGenerating || shouldAutoScroll.value) {
+    end = msgs.length - 1
+    bottomHeight = 0
+  }
+
+  visibleStartIndex.value = Math.max(0, start)
+  visibleEndIndex.value = Math.min(msgs.length - 1, end)
+  topSpacerHeight.value = topHeight
+  bottomSpacerHeight.value = bottomHeight
+}
+
+const recordMessageHeight = (id: string, el: HTMLElement | null) => {
+  if (el) {
+    const h = el.offsetHeight
+    if (h > 0 && measuredHeights.get(id) !== h) {
+      measuredHeights.set(id, h)
+    }
+  }
+}
+
+const displayedMessages = computed(() => {
+  const msgs = chatStore.messages
+  if (msgs.length <= VIRTUAL_SCROLL_THRESHOLD) {
+    return msgs
+  }
+  return msgs.slice(visibleStartIndex.value, visibleEndIndex.value + 1)
+})
+
 // ========================
 // 1. 回到底部悬浮控制 (丝滑平滑下滚) 与各会话独立滚动位置记忆
 // ========================
@@ -276,6 +371,9 @@ const handleScroll = () => {
   if (!isSwitchingSession.value && chatStore.currentSessionId) {
     chatStore.saveSessionScroll(chatStore.currentSessionId, scrollTop, isAtBottom)
   }
+
+  // 触发动态虚拟滚动窗口计算
+  updateVirtualWindow()
 }
 
 const scrollToBottomSmooth = () => {
@@ -893,6 +991,14 @@ onUnmounted(() => {
         <span class="text-xs font-semibold text-gray-800 dark:text-zinc-200 truncate">
           {{ currentSessionTitle }}
         </span>
+        <span
+          v-if="isVirtualScrollActive"
+          class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/40 flex items-center gap-1 flex-shrink-0"
+          title="已激活动态高度虚拟滚动，视口外超额 DOM 节点自动移出，万条消息不掉帧"
+        >
+          <Zap class="w-2.5 h-2.5 text-emerald-500" />
+          <span>虚拟视口 ({{ displayedMessages.length }}/{{ chatStore.messages.length }})</span>
+        </span>
       </div>
 
       <!-- 右侧：导出对话与清空消息按钮 -->
@@ -1022,13 +1128,20 @@ onUnmounted(() => {
 
       <!-- 历史与实时消息列表 (底部预留 pb-36 保证滑至底部时不被输入框遮挡) -->
       <div v-else ref="messagesListRef" class="max-w-4xl mx-auto px-4 pt-4 pb-36 space-y-4 w-full">
+        <!-- 虚拟滚动顶部撑高占位 (动态维持滚动条真实高度) -->
+        <div v-if="topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }" class="w-full pointer-events-none" />
+
         <div
-          v-for="msg in chatStore.messages"
+          v-for="msg in displayedMessages"
           :key="msg.id"
+          :ref="(el) => recordMessageHeight(msg.id, el as HTMLElement)"
           class="message-item-container w-full"
         >
           <ChatMessage :message="msg" />
         </div>
+
+        <!-- 虚拟滚动底部撑高占位 (动态维持滚动条真实高度) -->
+        <div v-if="bottomSpacerHeight > 0" :style="{ height: `${bottomSpacerHeight}px` }" class="w-full pointer-events-none" />
       </div>
     </div>
 

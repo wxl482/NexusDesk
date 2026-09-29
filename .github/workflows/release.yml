@@ -1,0 +1,65 @@
+name: 🚀 跨平台全自动打包与发布 (CI/CD Release)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 编译与发布 - ${{ matrix.os }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: universal
+            target: mac
+          - os: windows-latest
+            arch: x64
+            target: win
+          - os: ubuntu-latest
+            arch: x64
+            target: linux
+
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 配置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Linux 系统构建依赖安装
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools libfuse2
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        run: npm install
+
+      - name: 编译 Vite 与前端资源
+        working-directory: frontend
+        run: npm run build
+
+      - name: 跨平台打包与发布至 GitHub Releases
+        working-directory: frontend
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx electron-builder --${{ matrix.target }} --publish always

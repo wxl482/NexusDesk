@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, nativeImage, globalShortcut } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, nativeImage, globalShortcut, clipboard } from 'electron'
 import path from 'path'
+import { autoUpdater } from 'electron-updater'
 import { PythonBackendManager } from './python-manager'
 
 // 构建与资源根目录配置
@@ -212,16 +213,102 @@ ipcMain.handle('open-in-main-window', (_, query: string) => {
   }
 })
 
+// 读取系统剪贴板（用于 QuickBar 一键速查与分析）
+ipcMain.handle('read-clipboard-text', () => {
+  return clipboard.readText() || ''
+})
+
+// 检查更新 IPC
+ipcMain.handle('check-for-updates', async () => {
+  if (!app.isPackaged) {
+    return { status: 'dev', message: '当前处于开发环境，无须执行更新。' }
+  }
+  try {
+    const res = await autoUpdater.checkForUpdates()
+    return { status: 'ok', updateInfo: res?.updateInfo }
+  } catch (e: any) {
+    return { status: 'error', message: e.message }
+  }
+})
+
+// 一键重启并安装更新
+ipcMain.handle('quit-and-install-update', () => {
+  autoUpdater.quitAndInstall(false, true)
+})
+
+/**
+ * 初始化跨平台全自动静默更新器 (electron-updater)
+ */
+function initAutoUpdater() {
+  if (!app.isPackaged) {
+    console.log('[AutoUpdater] 当前处于开发环境，自动跳过更新检测')
+    return
+  }
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[AutoUpdater] 正在向 GitHub Releases 检查最新版本...')
+  })
+
+  autoUpdater.on('update-available', (info) => {
+    console.log('[AutoUpdater] 发现新版本:', info.version)
+    win?.webContents.send('updater-message', {
+      status: 'available',
+      version: info.version,
+      releaseNotes: info.releaseNotes,
+    })
+  })
+
+  autoUpdater.on('update-not-available', () => {
+    console.log('[AutoUpdater] 已是最新版本')
+  })
+
+  autoUpdater.on('download-progress', (progressObj) => {
+    win?.webContents.send('updater-message', {
+      status: 'downloading',
+      percent: Math.floor(progressObj.percent),
+      bytesPerSecond: progressObj.bytesPerSecond,
+    })
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('[AutoUpdater] 新版本下载完毕，准备就绪:', info.version)
+    win?.webContents.send('updater-message', {
+      status: 'downloaded',
+      version: info.version,
+    })
+  })
+
+  autoUpdater.on('error', (err) => {
+    console.warn('[AutoUpdater] 更新服务异常:', err.message)
+  })
+
+  // 延迟 4 秒执行初次检测，避免启动抢占带宽
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch((err) => {
+      console.warn('[AutoUpdater] 初始检查失败:', err)
+    })
+  }, 4000)
+}
+
 // Electron 初始化就绪后创建主窗口、浮动窗口与全局快捷键
 app.whenReady().then(() => {
   createWindow()
   createQuickBarWindow()
+  initAutoUpdater()
 
-  // 注册 Raycast 风格全局唤出快捷键: CommandOrControl+Shift+Space 或 Alt+Space
+  // 注册 Raycast / Spotlight 风格全局唤出快捷键: Option+Space (Mac) / Alt+Space (Win/Linux) / Cmd+Shift+Space
   try {
     globalShortcut.register('CommandOrControl+Shift+Space', toggleQuickBar)
     globalShortcut.register('Alt+Space', toggleQuickBar)
-    console.log('[Electron] 成功注册 QuickBar 全局快捷键: Cmd/Ctrl+Shift+Space / Alt+Space')
+    if (process.platform === 'darwin') {
+      try {
+        globalShortcut.register('Option+Space', toggleQuickBar)
+      } catch (_) {}
+    }
+    console.log('[Electron] 成功注册 QuickBar 全局快捷键: Option+Space / Alt+Space / Cmd+Shift+Space')
   } catch (err) {
     console.warn('[Electron] 注册全局快捷键异常:', err)
   }
