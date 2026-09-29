@@ -392,19 +392,6 @@ onMounted(() => {
 
       <!-- 选项卡 2：MCP 外部插件协议 -->
       <div v-else-if="activeTab === 'mcp'" class="space-y-4">
-        <!-- MCP 说明 Banner -->
-        <div class="p-4 rounded-xl border border-indigo-200/70 dark:border-indigo-900/50 bg-indigo-50/60 dark:bg-indigo-950/20 flex items-start justify-between gap-4">
-          <div class="space-y-1">
-            <div class="text-xs font-semibold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
-              <Boxes class="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-              <span>Model Context Protocol (MCP 开放标准)</span>
-            </div>
-            <p class="text-[11px] text-indigo-800/80 dark:text-indigo-300/70 leading-relaxed">
-              MCP 是由 Anthropic 开源的通用 AI 工具与上下文交互协议。NexusDesk 自动通过 stdio 进程将任何官方或社区的 MCP Server 动态编译为智能体工具，实现即插即用的外部数据库连接、GitHub 操作、爬虫与系统集成。
-            </p>
-          </div>
-        </div>
-
         <!-- MCP 服务列表 -->
         <div v-if="mcpServers.length === 0" class="p-8 text-center border border-gray-200 dark:border-zinc-800 rounded-xl bg-white dark:bg-zinc-900/50 text-gray-400 text-xs">
           暂无已配置的 MCP 服务。点击右上角「注册 MCP 服务」快速绑定官方或社区插件。
