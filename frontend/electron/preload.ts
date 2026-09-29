@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Raycast / Spotlight 悬浮小窗控制器
   hideQuickBar: () => ipcRenderer.invoke('hide-quick-bar'),
+  resizeQuickBar: (height: number) => ipcRenderer.invoke('resize-quick-bar', { height }),
   openInMainWindow: (query?: string) => ipcRenderer.invoke('open-in-main-window', query),
   onFocusChatQuery: (callback: (query: string) => void) => {
     ipcRenderer.on('focus-chat-query', (_, query) => callback(query))

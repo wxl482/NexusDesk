@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, nativeImage, globalShortcut, clipboard } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, nativeImage, globalShortcut, clipboard, screen } from 'electron'
 import path from 'path'
 import { autoUpdater } from 'electron-updater'
 import { PythonBackendManager } from './python-manager'
@@ -85,15 +85,28 @@ function createWindow() {
   }
 }
 
+function getQuickBarBounds(height = 118) {
+  const currentDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const { x: displayX, y: displayY, width: displayWidth, height: displayHeight } = currentDisplay.workArea
+  const winWidth = 680
+  const x = Math.round(displayX + (displayWidth - winWidth) / 2)
+  const y = Math.round(displayY + displayHeight * 0.18)
+  return { x, y, width: winWidth, height }
+}
+
 /**
  * 创建 Raycast / Spotlight 悬浮快捷呼出小窗 (QuickBar)
  */
 function createQuickBarWindow() {
   if (quickBarWin) return
 
+  const bounds = getQuickBarBounds(118)
+
   quickBarWin = new BrowserWindow({
-    width: 680,
-    height: 440,
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -101,6 +114,7 @@ function createQuickBarWindow() {
     show: false,
     skipTaskbar: true,
     hasShadow: false,
+    backgroundColor: '#00000000',
     webPreferences: {
       preload,
       nodeIntegration: false,
@@ -122,6 +136,19 @@ function createQuickBarWindow() {
   quickBarWin.on('blur', () => {
     quickBarWin?.hide()
   })
+
+  // 隐藏后自动重置回极简单行高 (118px)
+  quickBarWin.on('hide', () => {
+    if (quickBarWin && !quickBarWin.isDestroyed()) {
+      const current = quickBarWin.getBounds()
+      quickBarWin.setBounds({
+        x: current.x,
+        y: current.y,
+        width: 680,
+        height: 118,
+      })
+    }
+  })
 }
 
 function toggleQuickBar() {
@@ -132,6 +159,9 @@ function toggleQuickBar() {
   if (quickBarWin?.isVisible()) {
     quickBarWin.hide()
   } else {
+    // 每次唤出自动定位至鼠标当前所在屏幕黄金视角
+    const bounds = getQuickBarBounds(118)
+    quickBarWin?.setBounds(bounds)
     quickBarWin?.show()
     quickBarWin?.focus()
   }
@@ -198,6 +228,19 @@ ipcMain.handle('open-external', async (_, url: string) => {
 // QuickBar 控制 IPC
 ipcMain.handle('hide-quick-bar', () => {
   quickBarWin?.hide()
+})
+
+ipcMain.handle('resize-quick-bar', (_, { height }: { height: number }) => {
+  if (quickBarWin && !quickBarWin.isDestroyed()) {
+    const current = quickBarWin.getBounds()
+    const targetHeight = Math.max(height, 80)
+    quickBarWin.setBounds({
+      x: current.x,
+      y: current.y,
+      width: 680,
+      height: targetHeight,
+    })
+  }
 })
 
 ipcMain.handle('open-in-main-window', (_, query: string) => {
