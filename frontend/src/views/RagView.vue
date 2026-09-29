@@ -141,7 +141,7 @@ const handleSearch = async () => {
             type="file"
             @change="handleFileChange"
             class="hidden"
-            accept=".txt,.md,.pdf,.docx,.py,.json,.csv"
+            accept=".txt,.md,.markdown,.pdf,.docx,.doc,.xlsx,.xls,.xlsm,.csv,.tsv,.json,.py,.js,.ts,.html,.css,.sql,.sh,.log,.yaml,.yml"
           />
           <div class="w-12 h-12 rounded-full bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-gray-700 dark:text-zinc-200 mx-auto mb-3">
             <Upload class="w-6 h-6" />
@@ -150,7 +150,7 @@ const handleSearch = async () => {
             点击选择文件，或将本地文件直接拖拽至此处
           </div>
           <div class="text-xs text-gray-400 mt-1">
-            支持 Markdown (.md)、文本 (.txt)、源代码 (.py/json/csv) 等各类文档
+            支持 Office 文档 (Word/Excel)、PDF、Markdown、CSV 表格、纯文本与各类程序源码
           </div>
         </div>
 
