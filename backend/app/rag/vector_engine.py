@@ -511,8 +511,11 @@ class RAGEngine:
 @tool
 def query_knowledge_base(query: str) -> str:
     """
-    检索本地私有 RAG 知识库，查找用户上传的文档、参考材料、专有知识或历史笔记。
-    当提问涉及私有领域文档或特定文件时，优先调用此工具检索事实依据。
+    检索本地私有知识库 (RAG)，查找用户已上传的文件与参考资料（包含 PDF 讲义、Word 文档、技术白皮书、Excel 表格、代码与笔记等）。
+    【第一优先级调用准则】：
+    当用户的提问涉及任何专业知识、技术概念（例如 LangChain、架构、模型原理）、操作指南、业务材料、或可能在用户已上传文档中有记载的内容时，
+    必须【第一优先级】首先调用此工具进行精准召回！
+    严禁跳过本地知识库而直接去公网检索。只有当本地知识库中未检索到相关内容时，才使用 web_search 补充外部信息。
 
     参数:
         query: 检索关键词或问句
@@ -520,14 +523,17 @@ def query_knowledge_base(query: str) -> str:
     engine = RAGEngine.get_instance()
     docs = engine.list_documents()
     if not docs:
-        return "本地知识库当前为空（尚未上传任何文档）。如果用户询问私有资料，请明确告知当前知识库暂无相关文档。"
+        return "本地知识库当前为空（尚未上传任何文档）。如果用户询问专有资料，请明确告知当前知识库暂无相关文档。"
 
-    results = engine.search_similar(query, top_k=3)
+    top_k = getattr(settings, "RAG_TOP_K", 4) or 4
+    results = engine.search_similar(query, top_k=top_k)
     if not results:
-        return f"知识库中未检索到与 '{query}' 相关的有效片段。建议尝试更简短明确的关键词，或向用户说明未找到匹配内容。"
+        return f"本地知识库中未检索到与 '{query}' 相关的有效片段。建议尝试更简短明确的关键词，或向用户说明未找到匹配内容。"
 
-    output_lines = [f"从本地知识库 (Milvus + 智谱 embedding-3) 中匹配到 {len(results)} 条高相关度片段:"]
+    output_lines = [f"从本地知识库 (Milvus + 智谱 embedding-3 + BM25) 中匹配到 {len(results)} 条高相关度片段:"]
     for i, r in enumerate(results, 1):
-        output_lines.append(f"[{i}] 来源文档: 《{r['title']}》 (匹配距离: {r['distance']})")
-        output_lines.append(f"{r['content']}\n")
+        output_lines.append(f"[{i}] 来源文档: 《{r['title']}》 (分类: {r.get('category', 'default')}, 相似度距离: {r.get('distance', 'N/A')})")
+        # 优先使用父切片宽上下文
+        display_content = r.get("parent_content") or r.get("content", "")
+        output_lines.append(f"{display_content}\n")
     return "\n".join(output_lines)

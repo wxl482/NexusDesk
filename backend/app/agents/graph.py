@@ -27,6 +27,7 @@ from app.llm.factory import LLMFactory
 from app.agents.laya_service import laya_service
 from app.agents.planner import generate_task_plan, should_decompose_goal
 from app.agents.history_sanitizer import sanitize_message_history
+from app.rag.knowledge_catalog import get_knowledge_base_prompt_context
 
 # 全局共享内存检查点（Checkpointer），用于支持多轮连续对话上下文存储
 memory_checkpointer = MemorySaver()
@@ -60,7 +61,7 @@ SYSTEM_PROMPTS = {
         "3. 实时互联网搜索 (`web_search`)、高精度 Python 计算 (`execute_python_code`) 以及私有知识库智能检索 (`query_knowledge_base`)。\n\n"
         "执行原则：\n"
         "1. 自主意图识别：如果是日常对话、逻辑推理或通用知识问答，直接给出排版良好的高质量回复，无需调用多余工具；\n"
-        "2. 当问题涉及私有文档/知识库时，主动调用 `query_knowledge_base` 获取事实依据并引用回答；\n"
+        "2. 【知识库第一优先级】：当提问涉及任何技术概念、系统架构、产品功能、学习资料或已收录的参考文档时，必须优先主动调用 `query_knowledge_base` 在本地知识库中精准检索真实依据，严禁舍近求远去公网检索！\n"
         "3. 当需要运行命令、读写文件或检索最新时效信息时，自主精准调用对应工具并综合结果向用户提供清晰解答；\n"
         "4. 工具调用效率：进行网络检索等外部操作时，务必保持高效与克制。单次任务通常进行 1~2 次核心关键词检索即可充分掌握信息，严禁发起大量连续同质化检索造成严重网络延迟。"
         + COMMON_OUTPUT_RULES
@@ -427,6 +428,22 @@ def create_agent_graph(
         raw_messages = list(state["messages"])
         messages, healed_replacements = sanitize_message_history(raw_messages)
         current_steps = state.get("tool_steps", 0) or 0
+
+        # 提取用户最新提问文本，并动态注入本地私有知识库当前索引状态与就绪文档导引
+        last_human_text = ""
+        for msg in reversed(raw_messages):
+            if isinstance(msg, HumanMessage) or getattr(msg, "type", "") in ["human", "user"]:
+                if isinstance(msg.content, str):
+                    last_human_text = msg.content
+                elif isinstance(msg.content, list):
+                    for part in msg.content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            last_human_text += part.get("text", "") + " "
+                break
+
+        kb_prompt_block = get_knowledge_base_prompt_context(last_human_text)
+        if kb_prompt_block:
+            effective_system_prompt += kb_prompt_block
 
         # 在 react / multi_agent / rag 模式下，保持工具绑定能力，由 LLM 自主决定是否调用；
         # 仅当用户明确选择纯对话模式 (mode == 'chat') 或步数已达到收敛阈值 (>= 4) 时使用免工具的纯文本管道

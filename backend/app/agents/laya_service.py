@@ -108,13 +108,38 @@ class LayaDecisionService:
         if router is None:
             return self._fallback_rule_decision(text_clean)
 
-        # 常见强特征词快速先验检测
+        # 常见强特征词与本地知识库文档命中快速先验检测
         lower_t = text_clean.lower()
         has_chat_hint = any(k in lower_t for k in ["你好", "您好", "hi", "hello", "早安", "晚安", "介绍一下你自己", "你是谁", "介绍自己", "自我介绍", "谢谢", "再见", "聊聊", "是谁"])
         has_search_hint = any(k in lower_t for k in ["搜索", "检索", "查一下", "最新", "前沿", "动态", "突破", "新闻", "2025", "简报", "调研", "上网查", "抓取"])
         has_code_hint = any(k in lower_t for k in ["写代码", "编写代码", "实现", "函数", "算法", "bug", "脚本", "python", "javascript", "vue", "java", "c++", "报错"])
         has_term_hint = any(k in lower_t for k in ["执行命令", "终端", "shell", "bash", "git", "删除文件", "查看目录", "ls", "cd", "mkdir"])
         has_rag_hint = any(k in lower_t for k in ["知识库", "上传的文档", "查阅文档", "公司资料", "手册"])
+
+        # 检查是否直接命中了本地知识库已录入的文档标题关键词
+        try:
+            from app.rag.knowledge_catalog import check_knowledge_base_hit
+            matched_kb_docs = check_knowledge_base_hit(lower_t)
+        except Exception:
+            matched_kb_docs = None
+
+        if matched_kb_docs:
+            has_rag_hint = True
+            logger.info(f"⚡ [Laya] 用户提问命中本地知识库文档: {matched_kb_docs}，毫秒级快速分流至 RAG 专家。")
+            return {
+                "agent": "rag",
+                "agent_name": "私有知识库专家",
+                "confidence": 0.98,
+                "probabilities": {"rag": 0.98, "chat": 0.0, "coder": 0.01, "researcher": 0.01, "terminal": 0.0},
+                "needs_tool": True,
+                "needs_tool_prob": 0.98,
+                "risk_score": 0.0,
+                "is_high_risk": False,
+                "latency_ms": 0.3,
+                "model_used": "kb_hit_fastpath",
+                "matched_documents": matched_kb_docs,
+                "is_fallback": False,
+            }
 
         # 针对极为明确的日常问候/自我介绍，直接毫秒级短路，零开销返回纯对话
         if has_chat_hint and not (has_search_hint or has_term_hint or has_rag_hint or has_code_hint):
