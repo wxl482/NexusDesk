@@ -26,6 +26,7 @@ class ZhipuEmbeddings(Embeddings):
     """
     智谱 AI embedding-3 官方兼容向量化适配器。
     基于标准 OpenAI 兼容协议接入智谱开放平台，输出 2048 维高精度稠密向量。
+    内置全自动分批切片机制（单批严格限制在 32 条以内），彻底杜绝智谱 API '1214 input数组最大不得超过64条' 限制。
     """
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or settings.ZHIPUAI_API_KEY or os.getenv("ZHIPUAI_API_KEY", "")
@@ -37,15 +38,36 @@ class ZhipuEmbeddings(Embeddings):
             api_key=key_to_use,
             base_url=self.base_url,
             check_embedding_ctx_length=False,
+            chunk_size=32,  # 确保底层 OpenAIEmbeddings 默认分批大小不超过 32
         )
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """批量计算文档嵌入向量"""
-        return self._client.embed_documents(texts)
+        """
+        批量计算文档嵌入向量：
+        自动执行智能分批切片（每批 32 条），并对超长字符与空字符串执行防御性清洗。
+        """
+        if not texts:
+            return []
+
+        BATCH_SIZE = 32
+        all_embeddings: List[List[float]] = []
+
+        for i in range(0, len(texts), BATCH_SIZE):
+            batch = texts[i : i + BATCH_SIZE]
+            # 防御性清洗：单条字符截断至 3500 字以内避免超出 token 窗口，空字符填补空格
+            clean_batch = [
+                (t[:3500] if len(t) > 3500 else t) if (t and t.strip()) else " "
+                for t in batch
+            ]
+            batch_res = self._client.embed_documents(clean_batch)
+            all_embeddings.extend(batch_res)
+
+        return all_embeddings
 
     def embed_query(self, text: str) -> List[float]:
         """计算单条查询嵌入向量"""
-        return self._client.embed_query(text)
+        clean_text = text[:3500] if len(text) > 3500 else (text if text.strip() else " ")
+        return self._client.embed_query(clean_text)
 
 
 class LocalChromadbEmbeddings(Embeddings):
@@ -296,7 +318,9 @@ class RAGEngine:
                 for c in chunks_raw
             ]
             if docs_to_add:
-                self.vector_store.add_documents(docs_to_add)
+                MILVUS_BATCH = 32
+                for i in range(0, len(docs_to_add), MILVUS_BATCH):
+                    self.vector_store.add_documents(docs_to_add[i : i + MILVUS_BATCH])
                 total_chunks += len(docs_to_add)
         self._refresh_bm25_index()
         logger.info(f"[RAGEngine] 灾备自愈重建完成！成功恢复 {len(snapshot_docs)} 篇文档，共 {total_chunks} 个切片。")
@@ -354,8 +378,11 @@ class RAGEngine:
                 documents.append(doc_obj)
                 overall_idx += 1
 
-        # 1. 批量写入 Milvus
-        self.vector_store.add_documents(documents)
+        # 1. 批量写入 Milvus（分批切片写入，单批 32 条，彻底兼容智谱 64 限制与 Milvus 内存开销）
+        MILVUS_BATCH = 32
+        for i in range(0, len(documents), MILVUS_BATCH):
+            batch_docs = documents[i : i + MILVUS_BATCH]
+            self.vector_store.add_documents(batch_docs)
 
         # 2. 同步双写灾备快照（方案 C：即使 db 文件被删，快照随时可还原）
         self.backup_mgr.save_document_snapshot(
