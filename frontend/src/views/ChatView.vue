@@ -34,7 +34,6 @@ import {
   Folder,
   Printer,
   Pencil,
-  Zap,
 } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chat'
 import { useSettingsStore } from '../stores/settings'
@@ -268,10 +267,6 @@ const visibleStartIndex = ref(0)
 const visibleEndIndex = ref(0)
 const topSpacerHeight = ref(0)
 const bottomSpacerHeight = ref(0)
-
-const isVirtualScrollActive = computed(() => {
-  return chatStore.messages.length > VIRTUAL_SCROLL_THRESHOLD
-})
 
 const updateVirtualWindow = () => {
   const msgs = chatStore.messages
@@ -990,14 +985,6 @@ onUnmounted(() => {
       <div class="flex items-center gap-2 min-w-0 max-w-[80%] window-no-drag">
         <span class="text-xs font-semibold text-gray-800 dark:text-zinc-200 truncate">
           {{ currentSessionTitle }}
-        </span>
-        <span
-          v-if="isVirtualScrollActive"
-          class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/40 flex items-center gap-1 flex-shrink-0"
-          title="已激活动态高度虚拟滚动，视口外超额 DOM 节点自动移出，万条消息不掉帧"
-        >
-          <Zap class="w-2.5 h-2.5 text-emerald-500" />
-          <span>虚拟视口 ({{ displayedMessages.length }}/{{ chatStore.messages.length }})</span>
         </span>
       </div>
 
