@@ -22,6 +22,15 @@ export const useRagStore = defineStore('rag', {
     isLoading: false,
     // 语义检索结果集
     searchResults: [] as any[],
+    // 方案 C 灾备快照状态
+    backupStatus: null as null | {
+      backup_docs_count: number
+      primary_backup_exists: boolean
+      primary_backup_path: string
+      redundant_backup_exists: boolean
+      redundant_backup_path: string
+      updated_at?: string | null
+    },
   }),
 
   actions: {
@@ -61,16 +70,17 @@ export const useRagStore = defineStore('rag', {
       }
     },
 
-    /** 上传本地文件到知识库并向量化 */
-    async uploadFile(file: File) {
+    /** 上传本地文件到知识库并向量化，支持进度回调 */
+    async uploadFile(file: File, onProgress?: (percent: number) => void) {
       this.isLoading = true
       try {
-        const res = await apiClient.uploadRagFile(file)
+        const res = await apiClient.uploadRagFile(file, onProgress)
         await this.fetchDocuments()
         const chunks = res.chunks_count || res.chunks || 0
         return {
           success: true,
           message: `文档《${file.name}》已成功解析并录入知识库（生成 ${chunks} 个切片）`,
+          chunks: chunks,
           data: res,
         }
       } catch (err: any) {
@@ -107,6 +117,28 @@ export const useRagStore = defineStore('rag', {
         console.error('检索知识库失败:', err)
         return []
       }
+    },
+
+    /** 【方案 C 灾备】拉取灾备快照状态 */
+    async fetchBackupStatus() {
+      try {
+        this.backupStatus = await apiClient.getRagBackupStatus()
+      } catch (err) {
+        console.error('获取灾备状态失败:', err)
+      }
+    },
+
+    /** 【方案 C 灾备】从快照恢复并重建向量库 */
+    async restoreBackup() {
+      const res = await apiClient.restoreRagBackup()
+      await this.fetchDocuments()
+      await this.fetchBackupStatus()
+      return res
+    },
+
+    /** 【方案 C 灾备】导出全量灾备包 */
+    async exportBackup() {
+      return await apiClient.exportRagBackup()
     },
   },
 })

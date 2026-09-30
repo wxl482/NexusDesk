@@ -60,12 +60,18 @@ export const apiClient = {
     return res.data
   },
 
-  /** 上传本地文件到向量知识库进行向量化存储 */
-  async uploadRagFile(file: File) {
+  /** 上传本地文件到向量知识库进行向量化存储，支持上传进度回调 */
+  async uploadRagFile(file: File, onProgress?: (percent: number) => void) {
     const formData = new FormData()
     formData.append('file', file)
     const res = await api.post('/api/rag/upload/file', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (progressEvent) => {
+        if (progressEvent.total && onProgress) {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+          onProgress(percent)
+        }
+      },
     })
     return res.data
   },
@@ -86,6 +92,32 @@ export const apiClient = {
   async clearRag() {
     const res = await api.post('/api/rag/clear')
     return res.data
+  },
+
+  /** 【方案 C 灾备】获取知识库灾备快照状态与文档数量 */
+  async getRagBackupStatus() {
+    const res = await api.get('/api/rag/backup/status')
+    return res.data as {
+      success: boolean
+      backup_docs_count: number
+      primary_backup_exists: boolean
+      primary_backup_path: string
+      redundant_backup_exists: boolean
+      redundant_backup_path: string
+      updated_at?: string | null
+    }
+  },
+
+  /** 【方案 C 灾备】从灾备快照恢复并重建 Milvus 向量库 */
+  async restoreRagBackup() {
+    const res = await api.post('/api/rag/backup/restore')
+    return res.data as { success: boolean; recovered_chunks: number; message: string }
+  },
+
+  /** 【方案 C 灾备】导出知识库全量灾备包 */
+  async exportRagBackup() {
+    const res = await api.post('/api/rag/backup/export')
+    return res.data as { success: boolean; exported_file: string; message: string }
   },
 
   /** 解析上传的文件（包括 PDF、代码、文本文档等），提取文本内容 */
