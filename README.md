@@ -154,7 +154,19 @@ nexusdesk/
 - **Python**: `>= 3.10`（推荐 Python 3.11）
 - **Node.js**: `>= 18.0`（已内置 `npm`）
 
-### 2. 后端配置与启动
+### 2. 启动基础设施（Docker：PostgreSQL + Milvus）
+
+```bash
+# 在项目根目录启动 PostgreSQL（会话持久化）与 Milvus standalone（向量库，含 etcd/minio）
+docker compose up -d
+
+# 查看容器健康状态
+docker compose ps
+```
+
+> 首次启动会拉取镜像（Milvus 约 1GB）。如需回退本地单文件模式，将 `backend/.env` 中 `MILVUS_URI` 改为 `data/milvus/nexusdesk.db` 即可（Milvus Lite，零依赖）。
+
+### 3. 后端配置与启动
 
 ```bash
 # 1. 进入后端目录
@@ -167,8 +179,9 @@ cp .env.example .env
 ./venv/bin/python3 main.py --port 8000
 ```
 > 后端默认运行在 `http://127.0.0.1:8000`，API 交互文档可访问 `http://127.0.0.1:8000/docs`。
+> 启动时会自动连接 PostgreSQL 初始化会话检查点（连接失败时自动回退内存模式并打印警告）。
 
-### 3. 前端与 Electron 桌面端启动
+### 4. 前端与 Electron 桌面端启动
 
 ```bash
 # 进入前端目录
@@ -181,7 +194,7 @@ npm install
 npm run dev
 ```
 
-### 4. 一键构建与打包
+### 5. 一键构建与打包
 
 ```bash
 cd frontend

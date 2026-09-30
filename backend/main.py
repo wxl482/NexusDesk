@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core import settings, logger, setup_logging, setup_request_logging_middleware
 from app.api import api_router
+from app.agents.graph import init_checkpointer, close_checkpointer
 
 # 初始化全局日志系统（劫持标准库 logging 并开启 Loguru 终端彩显与文件轮转）
 setup_logging()
@@ -36,8 +37,11 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(MCPManager.get_instance().auto_probe_all_enabled())
     except Exception as e:
         logger.warning(f"MCP 自动探测初始化启动失败: {e}")
+    # 启动时初始化会话检查点：优先 PostgreSQL 持久化，连接失败自动回退内存模式
+    await init_checkpointer()
     yield
     logger.info(f"🛑 {settings.APP_NAME} 服务正在安全关闭...")
+    await close_checkpointer()
 
 # 实例化 FastAPI 核心应用
 app = FastAPI(

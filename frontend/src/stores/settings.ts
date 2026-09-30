@@ -275,6 +275,12 @@ export const useSettingsStore = defineStore('settings', {
       this.save()
     },
 
+    /** 设置默认智能体运行模式 */
+    setDefaultMode(mode: string) {
+      this.defaultMode = mode
+      this.save()
+    },
+
     /** 切换暗黑 / 明亮主题 */
     toggleDark() {
       this.isDark = !this.isDark

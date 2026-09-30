@@ -8,12 +8,31 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.agents.graph import create_agent_graph, memory_checkpointer
+from app.agents.graph import create_agent_graph, get_checkpointer
 from app.agents.laya_service import laya_service
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["对话与智能体调度"])
+
+
+async def _checkpoint_delete_thread(thread_id: str):
+    """统一清理指定会话的检查点（兼容 PostgreSQL 持久化与内存检查点）"""
+    cp = get_checkpointer()
+    if hasattr(cp, "adelete_thread"):
+        await cp.adelete_thread(thread_id)
+    elif hasattr(cp, "delete_thread"):
+        cp.delete_thread(thread_id)
+
+
+async def _checkpoint_get_state(thread_id: str):
+    """统一读取指定会话的检查点状态（兼容 PostgreSQL 持久化与内存检查点）"""
+    cp = get_checkpointer()
+    config = {"configurable": {"thread_id": thread_id}}
+    if hasattr(cp, "aget_tuple"):
+        tup = await cp.aget_tuple(config)
+        return tup.checkpoint if tup else None
+    return cp.get(config)
 
 class LayaDecisionRequest(BaseModel):
     """Laya 决策请求 Schema"""
@@ -35,7 +54,7 @@ class ChatRequest(BaseModel):
 
 _ACTIVE_THREADS: list[str] = []
 
-def _record_and_prune_threads(thread_id: str, max_threads: int = 60):
+async def _record_and_prune_threads(thread_id: str, max_threads: int = 60):
     """LRU 会话内存清理：限制内存中保存的活跃 Thread 检查点数量，淘汰最久未访问会话"""
     global _ACTIVE_THREADS
     if thread_id in _ACTIVE_THREADS:
@@ -47,8 +66,7 @@ def _record_and_prune_threads(thread_id: str, max_threads: int = 60):
         _ACTIVE_THREADS = _ACTIVE_THREADS[len(_ACTIVE_THREADS) - max_threads :]
         for old_tid in to_prune:
             try:
-                if hasattr(memory_checkpointer, "delete_thread"):
-                    memory_checkpointer.delete_thread(old_tid)
+                await _checkpoint_delete_thread(old_tid)
             except Exception:
                 pass
 
@@ -60,7 +78,7 @@ async def chat_stream(req: ChatRequest):
     实时推送 LangGraph 运行生命周期中的 Token 打字机流、工具调用状态以及节点流转事件。
     """
     # 动态记录活跃会话并自动修剪超期 Checkpoint，杜绝后端内存膨胀
-    _record_and_prune_threads(req.session_id)
+    await _record_and_prune_threads(req.session_id)
 
     # 智能模型动态路由 (Model Dynamic Router)
     from app.llm.router import ModelRouter
@@ -297,8 +315,7 @@ async def get_history(session_id: str):
     根据 session_id 从持久化检查点中提取当前会话的历史消息记录。
     """
     try:
-        config = {"configurable": {"thread_id": session_id}}
-        state = memory_checkpointer.get(config)
+        state = await _checkpoint_get_state(session_id)
         if not state or "channel_values" not in state or "messages" not in state["channel_values"]:
             return {"session_id": session_id, "messages": []}
 
@@ -338,12 +355,7 @@ async def delete_session_checkpoint(session_id: str):
     清理指定 session_id 在后端 Checkpointer 中的内存状态，防止长期运行时内存泄漏。
     """
     try:
-        if hasattr(memory_checkpointer, "delete_thread"):
-            memory_checkpointer.delete_thread(session_id)
-        elif hasattr(memory_checkpointer, "storage"):
-            keys_to_del = [k for k in memory_checkpointer.storage.keys() if k == session_id or (isinstance(k, tuple) and k and k[0] == session_id)]
-            for k in keys_to_del:
-                memory_checkpointer.storage.pop(k, None)
+        await _checkpoint_delete_thread(session_id)
         return {"status": "ok", "deleted_session": session_id}
     except Exception as e:
         logger.warning(f"清理会话 {session_id} 异常: {e}")

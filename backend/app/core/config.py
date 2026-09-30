@@ -45,12 +45,19 @@ class Settings(BaseSettings):
     ZHIPUAI_API_KEY: str = os.getenv("ZHIPUAI_API_KEY", "")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "embedding-3")
 
-    # 2. Milvus 向量数据库与安全灾备配置（方案 C：本地轻量级 + 自动双写备份快照）
+    # 2. Milvus 向量数据库与安全灾备配置（方案 C：服务端 + 自动双写备份快照）
+    # 默认连接 Docker 本地 Milvus 服务端；填本地文件路径可回退 Milvus Lite 单文件模式
     MILVUS_PATH: Path = MILVUS_DIR / "nexusdesk.db"
-    MILVUS_URI: str = os.getenv("MILVUS_URI", str(MILVUS_DIR / "nexusdesk.db"))
+    MILVUS_URI: str = os.getenv("MILVUS_URI", "http://localhost:19530")
     MILVUS_TOKEN: str = os.getenv("MILVUS_TOKEN", "")
     BACKUP_PATH: Path = BACKUP_DIR
     USER_BACKUP_PATH: Path = USER_BACKUP_DIR
+
+    # 3. PostgreSQL 配置（LangGraph 会话检查点持久化；连接失败时自动回退内存检查点）
+    POSTGRES_URI: str = os.getenv(
+        "POSTGRES_URI",
+        "postgresql://nexusdesk:nexusdesk@localhost:5432/nexusdesk",
+    )
 
     # 数据与存储路径
     DATA_PATH: Path = DATA_DIR

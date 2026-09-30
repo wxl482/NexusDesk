@@ -34,6 +34,9 @@ import {
   Folder,
   Printer,
   Pencil,
+  Zap,
+  MessageSquare,
+  Users,
 } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chat'
 import { useSettingsStore } from '../stores/settings'
@@ -194,8 +197,41 @@ const selectApprovalMode = (mode: 'ask_always' | 'smart' | 'full_access') => {
   showApprovalDropdown.value = false
 }
 
-// 统一全能自主智能体，默认固定为 react 模式
-chatStore.activeMode = 'react'
+// ========================
+// 智能体运行模式快捷切换（chat / react / multi_agent / rag）
+// ========================
+interface AgentModeOption {
+  id: 'chat' | 'react' | 'multi_agent' | 'rag'
+  label: string
+  desc: string
+}
+
+const agentModeOptions: AgentModeOption[] = [
+  { id: 'react', label: '自主智能体', desc: '自主规划，多步调用本地与 MCP 工具' },
+  { id: 'multi_agent', label: '多智能体协同', desc: '按任务意图自动切换专家角色' },
+  { id: 'rag', label: '知识库问答', desc: '深度聚焦本地向量知识库检索增强' },
+  { id: 'chat', label: '极速对话', desc: '无工具纯对话，响应最快' },
+]
+
+// 是否显示运行模式下拉面板
+const showModeDropdown = ref(false)
+// 运行模式下拉触发容器引用
+const modeDropdownRef = ref<HTMLElement | null>(null)
+
+// 当前运行模式的可读标签
+const currentModeLabel = computed(() => {
+  return agentModeOptions.find(m => m.id === chatStore.activeMode)?.label || '自主智能体'
+})
+
+// 快速切换智能体运行模式（同步持久化为默认模式）
+const selectAgentMode = (mode: AgentModeOption['id']) => {
+  chatStore.activeMode = mode
+  settingsStore.setDefaultMode(mode)
+  showModeDropdown.value = false
+}
+
+// 组件初始化时恢复用户上次选择的运行模式（不再强制固定 react）
+chatStore.activeMode = (settingsStore.defaultMode as AgentModeOption['id']) || 'react'
 
 // 当前会话标题
 const currentSessionTitle = computed(() => {
@@ -856,6 +892,9 @@ const handleClickOutside = (e: MouseEvent) => {
   if (approvalDropdownRef.value && !approvalDropdownRef.value.contains(e.target as Node)) {
     showApprovalDropdown.value = false
   }
+  if (modeDropdownRef.value && !modeDropdownRef.value.contains(e.target as Node)) {
+    showModeDropdown.value = false
+  }
   if (exportMenuRef.value && !exportMenuRef.value.contains(e.target as Node)) {
     showExportMenu.value = false
   }
@@ -1299,6 +1338,49 @@ onUnmounted(() => {
               >
                 <Plus class="w-4 h-4" />
               </button>
+
+              <!-- 运行模式快捷切换触发器与弹出菜单 -->
+              <div ref="modeDropdownRef" class="relative">
+                <button
+                  @click.stop="showModeDropdown = !showModeDropdown"
+                  type="button"
+                  class="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-medium text-gray-700 dark:text-zinc-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                  title="点击切换智能体运行模式"
+                >
+                  <Bot class="w-3.5 h-3.5 text-gray-600 dark:text-zinc-400 flex-shrink-0" />
+                  <span>{{ currentModeLabel }}</span>
+                  <ChevronDown class="w-3 h-3 text-gray-400 flex-shrink-0" />
+                </button>
+
+                <!-- 运行模式 Popover 下拉菜单 -->
+                <div
+                  v-if="showModeDropdown"
+                  class="absolute bottom-full mb-2 left-0 w-72 sm:w-80 rounded-2xl border border-gray-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl p-2 z-50 select-none space-y-1"
+                >
+                  <div class="px-3 pt-1.5 pb-2 flex items-center justify-between text-xs text-gray-500 dark:text-zinc-400 border-b border-gray-100 dark:border-zinc-800/80">
+                    <span class="font-medium text-gray-700 dark:text-zinc-300">选择智能体运行模式</span>
+                  </div>
+                  <div
+                    v-for="m in agentModeOptions"
+                    :key="m.id"
+                    @click="selectAgentMode(m.id)"
+                    class="p-2.5 rounded-xl flex items-start justify-between gap-3 cursor-pointer transition-colors"
+                    :class="[chatStore.activeMode === m.id ? 'bg-black/[0.05] dark:bg-white/[0.08]' : 'hover:bg-black/[0.03] dark:hover:bg-white/[0.05]']"
+                  >
+                    <div class="flex items-start gap-2.5 min-w-0">
+                      <Zap v-if="m.id === 'react'" class="w-4 h-4 mt-0.5 text-gray-700 dark:text-zinc-300 flex-shrink-0" />
+                      <Users v-else-if="m.id === 'multi_agent'" class="w-4 h-4 mt-0.5 text-gray-700 dark:text-zinc-300 flex-shrink-0" />
+                      <BookOpen v-else-if="m.id === 'rag'" class="w-4 h-4 mt-0.5 text-gray-700 dark:text-zinc-300 flex-shrink-0" />
+                      <MessageSquare v-else class="w-4 h-4 mt-0.5 text-gray-700 dark:text-zinc-300 flex-shrink-0" />
+                      <div>
+                        <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100 leading-tight">{{ m.label }}</div>
+                        <div class="text-[11px] text-gray-500 dark:text-zinc-400 mt-0.5 leading-snug">{{ m.desc }}</div>
+                      </div>
+                    </div>
+                    <Check v-if="chatStore.activeMode === m.id" class="w-4 h-4 text-gray-900 dark:text-white flex-shrink-0 mt-0.5" />
+                  </div>
+                </div>
+              </div>
 
               <!-- 权限模式快捷切换触发器与弹出菜单 (对标参考图) -->
               <div ref="approvalDropdownRef" class="relative">
