@@ -29,6 +29,13 @@ setup_logging()
 async def lifespan(app: FastAPI):
     """应用生命周期管理：服务启动与平滑关闭"""
     logger.info(f"🚀 {settings.APP_NAME} 服务启动就绪 (v{settings.VERSION})")
+    # 启动时后台并发探测已启用的 MCP 外部生态工具并注入智能体工具箱
+    try:
+        import asyncio
+        from app.mcp.manager import MCPManager
+        asyncio.create_task(MCPManager.get_instance().auto_probe_all_enabled())
+    except Exception as e:
+        logger.warning(f"MCP 自动探测初始化启动失败: {e}")
     yield
     logger.info(f"🛑 {settings.APP_NAME} 服务正在安全关闭...")
 

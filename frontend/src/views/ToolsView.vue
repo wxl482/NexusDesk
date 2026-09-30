@@ -140,27 +140,27 @@ const newServer = ref({
 // MCP 常用开箱即用官方预设模板
 const presets = [
   {
+    label: '本地 SQLite 数据库 (官方 MCP)',
+    id: 'sqlite',
+    name: 'SQLite Database Query',
+    command: 'mcp-server-sqlite',
+    argsText: '--db-path ./backend/data/app.db',
+    description: '基于官方 Python MCP 规范通过标准 SQL 查询本地 SQLite 数据库表结构与数据记录',
+  },
+  {
     label: '官方 Fetch 爬虫',
     id: 'fetch',
     name: 'Web Content Fetcher',
-    command: 'python3',
-    argsText: '-m mcp.server.fastmcp',
-    description: 'Anthropic 官方网页内容与 Markdown 提取服务',
-  },
-  {
-    label: '本地 SQLite 数据库',
-    id: 'sqlite',
-    name: 'SQLite Database Query',
-    command: 'npx',
-    argsText: '-y @modelcontextprotocol/server-sqlite --db-path ./backend/data/app.db',
-    description: '通过标准 SQL 查询本地 SQLite 数据库表结构与数据记录',
+    command: 'mcp-server-fetch',
+    argsText: '',
+    description: '基于官方 Python MCP 规范的外部网页内容与 Markdown 提取服务',
   },
   {
     label: '安全本地文件系统',
     id: 'filesystem',
     name: 'Secure Filesystem Access',
     command: 'npx',
-    argsText: '-y @modelcontextprotocol/server-filesystem ./backend/data/workspace',
+    argsText: '-y @modelcontextprotocol/server-filesystem ./backend/data',
     description: '限定在工作区安全目录下的文件读写与搜索服务',
   },
   {
