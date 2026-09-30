@@ -29,8 +29,59 @@ from app.agents.planner import generate_task_plan, should_decompose_goal
 from app.agents.history_sanitizer import sanitize_message_history
 from app.rag.knowledge_catalog import get_knowledge_base_prompt_context
 
-# 全局共享内存检查点（Checkpointer），用于支持多轮连续对话上下文存储
-memory_checkpointer = MemorySaver()
+# 全局共享检查点（Checkpointer）。优先使用 PostgreSQL 持久化（Docker 部署），
+# 连接失败时自动回退内存检查点。由 init_checkpointer() 在应用启动时完成初始化。
+memory_checkpointer: Any = MemorySaver()
+_pg_pool = None
+
+
+async def init_checkpointer():
+    """应用启动时初始化检查点：优先 PostgreSQL 持久化（重启不丢会话），失败自动回退内存模式"""
+    global memory_checkpointer, _pg_pool
+    from app.core.config import settings
+    try:
+        from psycopg_pool import AsyncConnectionPool
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+        _pg_pool = AsyncConnectionPool(
+            conninfo=settings.POSTGRES_URI,
+            min_size=1,
+            max_size=8,
+            open=False,
+            kwargs={"autocommit": True},
+        )
+        await _pg_pool.open(wait=True, timeout=20)
+        saver = AsyncPostgresSaver(_pg_pool)
+        await saver.setup()
+        memory_checkpointer = saver
+        logger.info("✅ 会话检查点已启用 PostgreSQL 持久化（重启后端不再丢失多轮上下文）")
+    except Exception as e:
+        logger.warning(f"⚠️ PostgreSQL 检查点初始化失败，回退内存检查点（重启将丢失会话上下文）: {e}")
+        if _pg_pool is not None:
+            try:
+                await _pg_pool.close()
+            except Exception as close_err:
+                logger.warning(f"关闭残留 PostgreSQL 连接池异常: {close_err}")
+            finally:
+                _pg_pool = None
+        memory_checkpointer = MemorySaver()
+
+
+async def close_checkpointer():
+    """应用关闭时释放 PostgreSQL 连接池"""
+    global _pg_pool
+    if _pg_pool is not None:
+        try:
+            await _pg_pool.close()
+        except Exception as e:
+            logger.warning(f"关闭 PostgreSQL 连接池异常: {e}")
+        finally:
+            _pg_pool = None
+
+
+def get_checkpointer():
+    """获取当前生效的检查点实例（模块级引用在启动时可能已切换，禁止直接 import 该变量）"""
+    return memory_checkpointer
 
 # 定义不同模式下的 LangChain ChatPromptTemplate
 AGENT_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
@@ -560,5 +611,5 @@ def create_agent_graph(
     workflow.add_edge("tools", "agent")
 
     # 挂载持久化检查点并编译
-    app = workflow.compile(checkpointer=memory_checkpointer)
+    app = workflow.compile(checkpointer=get_checkpointer())
     return app
