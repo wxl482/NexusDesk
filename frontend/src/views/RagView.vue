@@ -21,6 +21,7 @@ import {
   CheckCircle2,
   X,
 } from 'lucide-vue-next'
+import { apiClient } from '../api/client'
 import { useRagStore } from '../stores/rag'
 
 const message = useMessage()
@@ -54,6 +55,7 @@ interface UploadTask {
   stage: 'uploading' | 'parsing' | 'chunking' | 'indexing' | 'completed' | 'error'
   stageText: string
   chunks?: number
+  parentChunks?: number
   errorMessage?: string
 }
 
@@ -160,18 +162,9 @@ onMounted(() => {
   ragStore.fetchBackupStatus()
 })
 
-let simulatedTicker: any = null
 let autoResetTimer: any = null
 
-const clearTicker = () => {
-  if (simulatedTicker) {
-    clearInterval(simulatedTicker)
-    simulatedTicker = null
-  }
-}
-
 onUnmounted(() => {
-  clearTicker()
   if (autoResetTimer) {
     clearTimeout(autoResetTimer)
     autoResetTimer = null
@@ -184,7 +177,6 @@ const resetUploadState = () => {
     clearTimeout(autoResetTimer)
     autoResetTimer = null
   }
-  clearTicker()
   currentTask.value = null
   queueFiles.value = []
   if (fileInput.value) {
@@ -192,35 +184,7 @@ const resetUploadState = () => {
   }
 }
 
-// 启动后端计算阶段的平滑阶段轮询与渐进进度条模拟
-const startBackendProcessingTicker = () => {
-  clearTicker()
-  if (!currentTask.value) return
-  currentTask.value.stage = 'parsing'
-  currentTask.value.stageText = '正在提取正文与多维结构化表格...'
-
-  simulatedTicker = setInterval(() => {
-    if (!currentTask.value || currentTask.value.stage === 'completed' || currentTask.value.stage === 'error') {
-      clearTicker()
-      return
-    }
-    if (currentTask.value.progress < 58) {
-      currentTask.value.stage = 'parsing'
-      currentTask.value.stageText = '正在解析文档格式与多维数据表...'
-      currentTask.value.progress += 3
-    } else if (currentTask.value.progress < 78) {
-      currentTask.value.stage = 'chunking'
-      currentTask.value.stageText = '正在进行双层父子语义切片 (Parent-Child)...'
-      currentTask.value.progress += 2
-    } else if (currentTask.value.progress < 94) {
-      currentTask.value.stage = 'indexing'
-      currentTask.value.stageText = '正在计算向量特征并同步构建 Milvus 与 BM25 索引...'
-      currentTask.value.progress += 1
-    }
-  }, 280)
-}
-
-// 逐个处理上传文件队列
+// 逐个处理上传文件队列 (基于后端真实全链路 SSE 流式进度驱动)
 const processNextInQueue = async () => {
   if (queueFiles.value.length === 0) return
   const file = queueFiles.value.shift()!
@@ -230,51 +194,69 @@ const processNextInQueue = async () => {
     file,
     fileName: file.name,
     fileSizeText: formatFileSize(file.size),
-    progress: 5,
+    progress: 8,
     stage: 'uploading',
-    stageText: '正在上传本地文件...',
-  }
-
-  // 1. 网络上传进度回调 (映射至整体进度的 5% ~ 35%)
-  const onUploadProgress = (percent: number) => {
-    if (!currentTask.value || currentTask.value.stage !== 'uploading') return
-    const mapped = Math.min(35, Math.max(5, Math.round(percent * 0.35)))
-    currentTask.value.progress = mapped
-    currentTask.value.stageText = `正在上传本地文件 (${percent}%)...`
-
-    if (percent >= 100) {
-      startBackendProcessingTicker()
-    }
+    stageText: '正在接收并传输文件...',
+    chunks: 0,
+    parentChunks: 0,
   }
 
   try {
-    const res = await ragStore.uploadFile(file, onUploadProgress)
-    clearTicker()
+    const lastEvent = await apiClient.uploadRagFileStream(file, (evt) => {
+      if (!currentTask.value) return
+      if (evt.progress !== undefined) {
+        currentTask.value.progress = evt.progress
+      }
+      if (evt.stage) {
+        currentTask.value.stage = evt.stage as any
+      }
+      if (evt.message) {
+        currentTask.value.stageText = evt.message
+      }
+      if (evt.chunks_count !== undefined) {
+        currentTask.value.chunks = evt.chunks_count
+      } else if (evt.chunks !== undefined) {
+        currentTask.value.chunks = evt.chunks
+      }
+      if (evt.parent_chunks_count !== undefined) {
+        currentTask.value.parentChunks = evt.parent_chunks_count
+      } else if (evt.parent_chunks !== undefined) {
+        currentTask.value.parentChunks = evt.parent_chunks
+      }
+    })
 
-    if (res.success) {
+    // 实时同步刷新集合文档列表
+    await ragStore.fetchDocuments()
+
+    if (lastEvent && (lastEvent.stage === 'completed' || lastEvent.success)) {
+      const finalChunks = lastEvent.chunks_count ?? lastEvent.chunks ?? currentTask.value.chunks ?? 0
+      const finalParent = lastEvent.parent_chunks_count ?? lastEvent.parent_chunks ?? currentTask.value.parentChunks ?? 0
       currentTask.value.progress = 100
       currentTask.value.stage = 'completed'
-      currentTask.value.chunks = res.chunks || 0
-      currentTask.value.stageText = `入库成功！已生成 ${res.chunks || 0} 个切片`
+      currentTask.value.chunks = finalChunks
+      currentTask.value.parentChunks = finalParent
+      currentTask.value.stageText = `入库成功！已生成 ${finalChunks} 个切片`
 
-      // 若队列中还有待处理文件，延迟 1 秒后自动处理下一个
+      // 若队列中还有待处理文件，延迟 1.2 秒后自动处理下一个
       if (queueFiles.value.length > 0) {
         setTimeout(() => {
           processNextInQueue()
         }, 1200)
       } else {
-        // 全部完成：4 秒后自动淡出重置为上传区域，或者用户可以随时点击“继续添加”
+        // 全部完成：5 秒后自动淡出重置为上传区域，或者用户随时点击“继续添加”
         autoResetTimer = setTimeout(() => {
           resetUploadState()
-        }, 4000)
+        }, 5000)
       }
-    } else {
+    } else if (lastEvent && lastEvent.stage === 'error') {
       currentTask.value.stage = 'error'
-      currentTask.value.errorMessage = res.message || '文件上传或解析失败'
+      currentTask.value.errorMessage = lastEvent.message || '文件上传或解析失败'
       currentTask.value.stageText = '解析入库失败'
+    } else {
+      currentTask.value.stage = 'completed'
+      currentTask.value.progress = 100
     }
   } catch (err: any) {
-    clearTicker()
     if (currentTask.value) {
       currentTask.value.stage = 'error'
       currentTask.value.errorMessage = err.message || '网络连接或服务异常'
@@ -576,7 +558,7 @@ const handleExportBackup = async () => {
           >
             <span class="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 font-medium">
               <CheckCircle2 class="w-4 h-4 flex-shrink-0" />
-              <span>向量化与多维索引构建完成，已生成 {{ currentTask.chunks }} 个父子切片</span>
+              <span>向量化与多维索引构建完成，已生成 {{ currentTask.chunks }} 个高精度检索子切片（归属 {{ currentTask.parentChunks || 1 }} 个父级上下文大块）</span>
             </span>
             <button
               @click="resetUploadState"

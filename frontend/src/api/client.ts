@@ -76,6 +76,67 @@ export const apiClient = {
     return res.data
   },
 
+  /** 上传本地文件到向量知识库，通过 SSE 实时流式接收真实分块与多批次向量化进度 */
+  async uploadRagFileStream(
+    file: File,
+    onProgressEvent: (event: {
+      stage: string
+      progress: number
+      message: string
+      chunks_count?: number
+      parent_chunks_count?: number
+      chunks?: number
+      parent_chunks?: number
+      success?: boolean
+    }) => void
+  ) {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const response = await fetch(`${BASE_URL}/api/rag/upload/file/stream`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!response.ok) {
+      throw new Error(`文件上传请求失败: HTTP ${response.status}`)
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('当前运行环境不支持 ReadableStream')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let lastEvent: any = null
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (trimmed.startsWith('data:')) {
+          try {
+            const dataStr = trimmed.slice(5).trim()
+            if (dataStr) {
+              const eventObj = JSON.parse(dataStr)
+              lastEvent = eventObj
+              onProgressEvent(eventObj)
+            }
+          } catch (e) {
+            console.error('解析 SSE 流数据失败:', line, e)
+          }
+        }
+      }
+    }
+
+    return lastEvent
+  },
+
   /** 测试知识库相似度语义检索 */
   async searchRag(query: string, top_k: number = 4) {
     const res = await api.post('/api/rag/search', { query, top_k })

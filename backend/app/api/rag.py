@@ -81,6 +81,56 @@ async def upload_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件处理发生异常: {str(e)}")
 
+@router.post("/upload/file/stream")
+async def upload_file_stream(
+    file: UploadFile = File(...),
+    category: Optional[str] = Form("default"),
+):
+    """
+    真实全链路流式文件上传与向量化解析接口 (SSE)：
+    实时推送物理文件接收 -> 多格式正文与表格解析 -> 父子语义分块 -> 真实批次 Embedding 向量特征计算 -> Milvus 与 BM25 倒排索引持久化。
+    """
+    import json
+    import asyncio
+    from fastapi.responses import StreamingResponse
+
+    async def event_generator():
+        try:
+            filename = file.filename or "uploaded_file"
+            yield f"data: {json.dumps({'stage': 'uploading', 'progress': 10, 'message': f'正在接收文件《{filename}》...'}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.05)
+
+            content_bytes = await file.read()
+            file_size_kb = len(content_bytes) / 1024
+            yield f"data: {json.dumps({'stage': 'parsing', 'progress': 25, 'message': f'文件接收完成 ({file_size_kb:.1f} KB)，正在解析多维结构...'}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.05)
+
+            parsed = await asyncio.to_thread(parse_document, content_bytes, filename)
+            if not parsed.get("success") or not parsed.get("text"):
+                err_msg = parsed.get("error", "上传文件为空或无法解码为有效文本。")
+                yield f"data: {json.dumps({'stage': 'error', 'progress': 0, 'message': err_msg}, ensure_ascii=False)}\n\n"
+                return
+
+            text_content = parsed["text"]
+            doc_type = parsed.get("doc_type", "file")
+
+            yield f"data: {json.dumps({'stage': 'parsing', 'progress': 45, 'message': f'正文提取完成（共 {len(text_content)} 字符），准备语义切片...'}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.05)
+
+            engine = RAGEngine.get_instance()
+            for event in engine.add_text_document_stream(
+                title=filename,
+                text=text_content,
+                doc_type=doc_type,
+                category=category or "default",
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0.02)
+        except Exception as e:
+            yield f"data: {json.dumps({'stage': 'error', 'progress': 0, 'message': f'处理异常: {str(e)}'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 @router.post("/search")
 async def search_knowledge(req: SearchRequest):
     """

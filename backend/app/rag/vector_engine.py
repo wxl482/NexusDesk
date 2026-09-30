@@ -405,6 +405,128 @@ class RAGEngine:
             "category": category,
             "parent_chunks_count": len(parent_chunks),
             "chunks_count": len(documents),
+            "chunks": len(documents),
+            "parent_chunks": len(parent_chunks),
+        }
+
+    def add_text_document_stream(
+        self,
+        title: str,
+        text: str,
+        doc_type: str = "text",
+        category: str = "default",
+    ):
+        """
+        【P0 工业级真实流式 RAG 向量化入库】
+        基于生成器逐步推送真实的宏观父分块、微观子切片、多批次 Embedding 向量特征计算以及索引持久化进度。
+        """
+        text_clean = text.strip()
+        if not text_clean:
+            yield {"stage": "error", "progress": 0, "message": "文档内容为空或无有效文本。"}
+            return
+
+        doc_id = str(uuid.uuid4())
+        yield {
+            "stage": "chunking",
+            "progress": 50,
+            "message": "正在进行宏观父上下文切片 (~1200 字符)...",
+        }
+
+        parent_chunks = self.parent_splitter.split_text(text_clean)
+        if not parent_chunks:
+            parent_chunks = [text_clean]
+
+        yield {
+            "stage": "chunking",
+            "progress": 60,
+            "parent_chunks_count": len(parent_chunks),
+            "message": f"已完成宏观语义切片，提取 {len(parent_chunks)} 个父级上下文大块...",
+        }
+
+        documents: List[Document] = []
+        overall_idx = 0
+
+        for p_idx, p_content in enumerate(parent_chunks):
+            if len(p_content) <= 350:
+                c_chunks = [p_content]
+            else:
+                c_chunks = self.child_splitter.split_text(p_content)
+                if not c_chunks:
+                    c_chunks = [p_content]
+
+            for c_content in c_chunks:
+                doc_obj = Document(
+                    page_content=c_content,
+                    metadata={
+                        "doc_id": doc_id,
+                        "title": title,
+                        "doc_type": doc_type,
+                        "category": category,
+                        "chunk_index": overall_idx,
+                        "parent_id": f"{doc_id}_p{p_idx}",
+                        "parent_content": p_content,
+                    }
+                )
+                documents.append(doc_obj)
+                overall_idx += 1
+
+        total_child = len(documents)
+        yield {
+            "stage": "chunking",
+            "progress": 70,
+            "parent_chunks_count": len(parent_chunks),
+            "chunks_count": total_child,
+            "message": f"双层父子分块完成：共 {len(parent_chunks)} 个父块、{total_child} 个高精度子切片",
+        }
+
+        # 1. 批量向量化并写入 Milvus（分批切片写入，单批 32 条）
+        MILVUS_BATCH = 32
+        total_batches = (total_child + MILVUS_BATCH - 1) // MILVUS_BATCH
+        for b_idx, i in enumerate(range(0, total_child, MILVUS_BATCH), 1):
+            batch_docs = documents[i : i + MILVUS_BATCH]
+            self.vector_store.add_documents(batch_docs)
+            pct = 70 + int((b_idx / total_batches) * 24)
+            current_processed = min(i + MILVUS_BATCH, total_child)
+            yield {
+                "stage": "indexing",
+                "progress": pct,
+                "message": f"正在生成特征向量并写入 Milvus (批次 {b_idx}/{total_batches}: {current_processed}/{total_child} 切片)...",
+                "chunks_count": total_child,
+                "parent_chunks_count": len(parent_chunks),
+            }
+
+        # 2. 同步双写灾备快照
+        yield {
+            "stage": "indexing",
+            "progress": 96,
+            "message": "正在写入主/冗余双写快照与更新 BM25 倒排索引...",
+            "chunks_count": total_child,
+            "parent_chunks_count": len(parent_chunks),
+        }
+        self.backup_mgr.save_document_snapshot(
+            doc_id=doc_id,
+            title=title,
+            doc_type=doc_type,
+            chunks=documents,
+            category=category,
+        )
+
+        # 3. 动态刷新内存中的 BM25 关键词倒排索引
+        self._refresh_bm25_index()
+
+        logger.info(f"[RAGEngine] 文档 《{title}》 真实流式入库成功 (父切片: {len(parent_chunks)}, 子切片: {total_child})")
+
+        yield {
+            "stage": "completed",
+            "progress": 100,
+            "success": True,
+            "doc_id": doc_id,
+            "title": title,
+            "category": category,
+            "parent_chunks_count": len(parent_chunks),
+            "chunks_count": total_child,
+            "chunks": total_child,
+            "message": f"入库完成！已生成 {total_child} 个向量切片（包含 {len(parent_chunks)} 个父上下文块）",
         }
 
     def search_similar(
