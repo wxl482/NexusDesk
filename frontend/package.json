@@ -2,6 +2,11 @@
   "name": "nexusdesk",
   "version": "1.0.0",
   "description": "NexusDesk - Intelligent AI Agent Desktop Workstation built with Electron, Vue 3, and LangChain/LangGraph",
+  "homepage": "https://github.com/wxl482/NexusDesk",
+  "author": {
+    "name": "wxl482",
+    "email": "wxl482@users.noreply.github.com"
+  },
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -84,6 +89,7 @@
       "createDesktopShortcut": true
     },
     "linux": {
+      "maintainer": "wxl482 <wxl482@users.noreply.github.com>",
       "target": [
         {
           "target": "AppImage",
