@@ -255,6 +255,22 @@ async def chat_stream(req: ChatRequest):
                             })
                         }
 
+                # 6.5 多智能体意图识别与专家角色分派事件
+                elif kind == "on_chain_end" and name == "laya_gate_node":
+                    output = data.get("output", {})
+                    if output and isinstance(output, dict) and output.get("active_agent"):
+                        decision = output.get("laya_decision", {})
+                        yield {
+                            "event": "message",
+                            "data": json.dumps({
+                                "type": "agent_assigned",
+                                "agent": output.get("active_agent"),
+                                "intent": decision.get("intent", ""),
+                                "confidence": decision.get("confidence", 0.0),
+                                "reason": decision.get("reason", ""),
+                            })
+                        }
+
 
 
             # 发送流式结束事件

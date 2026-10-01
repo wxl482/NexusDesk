@@ -31,6 +31,8 @@ export interface StreamCallbacks {
   onNodeChange: (nodeName: string) => void
   /** 智能模型动态路由通知 */
   onModelRouted?: (info: { model: string; tier?: string; reason?: string }) => void
+  /** 多智能体意图识别与角色分派通知 */
+  onAgentAssigned?: (info: { agent: string; intent?: string; confidence?: number; reason?: string }) => void
   /** 长程任务规划步骤更新 */
   onPlan?: (plan: any[]) => void
   /** 异常处理 */
@@ -162,6 +164,14 @@ export class SSEChatClient {
         callbacks.onModelRouted?.({
           model: data.model,
           tier: data.tier,
+          reason: data.reason,
+        })
+        break
+      case 'agent_assigned':
+        callbacks.onAgentAssigned?.({
+          agent: data.agent,
+          intent: data.intent,
+          confidence: data.confidence,
           reason: data.reason,
         })
         break

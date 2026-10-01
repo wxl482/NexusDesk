@@ -19,11 +19,33 @@ import {
   CheckCircle2,
   XCircle,
   Circle,
+  Bot,
 } from 'lucide-vue-next'
 import ThinkingProcess from './ThinkingProcess.vue'
 import type { ChatMessage } from '../stores/chat'
 import { useChatStore } from '../stores/chat'
 import { cleanApprovalContent } from '../utils/approval'
+
+const getAgentBadgeText = (assigned: NonNullable<ChatMessage['assignedAgent']>): string => {
+  const agentMap: Record<string, { label: string; icon: string }> = {
+    coder: { label: '代码工程专家', icon: '💻' },
+    researcher: { label: '网络调研专家', icon: '📊' },
+    terminal: { label: '终端运维专家', icon: '🖥️' },
+    rag: { label: '知识库专家', icon: '📚' },
+    chat: { label: '极速对话助手', icon: '💬' },
+  }
+  const meta = agentMap[assigned.agent] || { label: assigned.agent, icon: '🤖' }
+  const confText = assigned.confidence ? ` ${(assigned.confidence * 100).toFixed(0)}%` : ''
+  return `${meta.icon} ${meta.label}${confText}`
+}
+
+const getAgentTooltip = (assigned: NonNullable<ChatMessage['assignedAgent']>): string => {
+  const parts: string[] = []
+  if (assigned.intent) parts.push(`识别意图: ${assigned.intent}`)
+  if (assigned.confidence) parts.push(`置信度: ${(assigned.confidence * 100).toFixed(1)}%`)
+  if (assigned.reason) parts.push(`分派理由: ${assigned.reason}`)
+  return parts.join(' | ') || 'Laya 意图识别与专家智能体分派'
+}
 
 const formatFileSize = (bytes: number): string => {
   if (bytes < 1024) return bytes + ' B'
@@ -313,11 +335,17 @@ const handleMarkdownClick = async (e: MouseEvent) => {
 
     <!-- 助手回复区域：左对齐纯净自然文本流，仅在角色为 assistant 或 system 时渲染 -->
     <div v-else-if="message.role === 'assistant' || message.role === 'system'" class="group w-full my-3 text-[13.5px] text-gray-800 dark:text-zinc-200">
-      <!-- 0. 智能模型动态路由指示胶囊 (显示自动匹配的推理/极速模型) -->
-      <div v-if="message.routedModel" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 mb-2 rounded-full text-[11px] font-medium bg-cyan-50/80 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border border-cyan-200/70 dark:border-cyan-800/50" :title="message.routedModel.reason || ''">
-        <Zap v-if="message.routedModel.tier === 'fast'" class="w-3 h-3 text-cyan-500" />
-        <Brain v-else class="w-3 h-3 text-indigo-500" />
-        <span>{{ message.routedModel.tier === 'fast' ? '⚡ 极速模型' : '🧠 深度推理' }} ({{ message.routedModel.model }})</span>
+      <!-- 0. 智能模型动态路由与多智能体分派指示胶囊 -->
+      <div v-if="message.routedModel || message.assignedAgent" class="flex flex-wrap items-center gap-2 mb-2">
+        <div v-if="message.routedModel" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-cyan-50/80 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border border-cyan-200/70 dark:border-cyan-800/50" :title="message.routedModel.reason || ''">
+          <Zap v-if="message.routedModel.tier === 'fast'" class="w-3 h-3 text-cyan-500" />
+          <Brain v-else class="w-3 h-3 text-indigo-500" />
+          <span>{{ message.routedModel.tier === 'fast' ? '⚡ 极速模型' : '🧠 深度推理' }} ({{ message.routedModel.model }})</span>
+        </div>
+        <div v-if="message.assignedAgent" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-purple-50/80 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border border-purple-200/70 dark:border-purple-800/50" :title="getAgentTooltip(message.assignedAgent)">
+          <Bot class="w-3 h-3 text-purple-500" />
+          <span>{{ getAgentBadgeText(message.assignedAgent) }}</span>
+        </div>
       </div>
 
       <!-- 0.5 长程任务规划与执行阶段清单 (Plan-and-Solve) -->

@@ -64,6 +64,13 @@ export interface ChatMessage {
     tier?: string
     reason?: string
   }
+  /** 多智能体协同下的分派角色信息 */
+  assignedAgent?: {
+    agent: string
+    intent?: string
+    confidence?: number
+    reason?: string
+  }
 }
 
 /**
@@ -467,6 +474,10 @@ export const useChatStore = defineStore('chat', {
           // 收到模型动态路由分流通知
           onModelRouted: (info) => {
             targetMsg.routedModel = info
+          },
+          // 收到多智能体意图与专家角色分派通知
+          onAgentAssigned: (info) => {
+            targetMsg.assignedAgent = info
           },
           // 收到长程任务规划清单更新
           onPlan: (plan) => {

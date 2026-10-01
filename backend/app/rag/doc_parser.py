@@ -1,9 +1,68 @@
 import io
 import csv
+import re
 import logging
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def convert_layout_tables_to_markdown(text: str) -> str:
+    """
+    智能版面与多列数据块结构化：
+    识别文本中的多列对齐排版，并自动转换为标准 Markdown 表格语法，
+    显著增强表格内容在 RAG 知识检索与 LLM 回答时的关联语义保留度。
+    """
+    lines = text.split("\n")
+    output = []
+    table_buffer = []
+
+    def flush_table():
+        nonlocal table_buffer
+        if not table_buffer:
+            return
+        if len(table_buffer) >= 2:
+            num_cols = max(len(r) for r in table_buffer)
+            # 仅当列数为 2~12 列且大部分行结构稳定时组装为 Markdown 表格
+            if 2 <= num_cols <= 12:
+                headers = table_buffer[0] + [""] * (num_cols - len(table_buffer[0]))
+                clean_headers = [c.replace("|", "\\|").strip() for c in headers]
+                output.append("\n| " + " | ".join(clean_headers) + " |")
+                output.append("| " + " | ".join(["---"] * num_cols) + " |")
+                for row in table_buffer[1:]:
+                    padded = row + [""] * (num_cols - len(row))
+                    clean_row = [c.replace("|", "\\|").strip() for c in padded]
+                    output.append("| " + " | ".join(clean_row) + " |")
+                output.append("")
+                table_buffer = []
+                return
+        for r in table_buffer:
+            output.append("  ".join(r))
+        table_buffer = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            flush_table()
+            output.append("")
+            continue
+
+        # 如果本身已经是 Markdown 表格行，直接保留
+        if stripped.startswith("|") and stripped.endswith("|"):
+            flush_table()
+            output.append(stripped)
+            continue
+
+        # 匹配由 2 个或以上空格分隔的多列
+        cols = [c.strip() for c in re.split(r"\s{2,}", stripped) if c.strip()]
+        if len(cols) >= 2:
+            table_buffer.append(cols)
+        else:
+            flush_table()
+            output.append(stripped)
+
+    flush_table()
+    return "\n".join(output)
 
 
 def parse_csv_to_markdown(content_bytes: bytes) -> str:
@@ -148,7 +207,7 @@ def parse_docx_to_markdown(content_bytes: bytes) -> str:
 
 def parse_pdf_to_markdown(content_bytes: bytes) -> str:
     """
-    深度提取 PDF 页面文字，支持密码解密校验与页面布局提取
+    深度提取 PDF 页面文字与表格排版结构，支持密码解密校验、空间布局提取与表格转 Markdown
     """
     import pypdf
 
@@ -172,18 +231,24 @@ def parse_pdf_to_markdown(content_bytes: bytes) -> str:
 
     pages_text = []
     for i, page in enumerate(reader.pages):
+        t = ""
+        # 1. 优先采用 layout 布局提取模式保留空间相对距离与列对齐
         try:
-            t = page.extract_text() or ""
-            if not t.strip():
-                # 尝试 layout 模式提取
-                try:
-                    t = page.extract_text(extraction_mode="layout") or ""
-                except Exception:
-                    pass
-            if t.strip():
-                pages_text.append(f"--- [PDF 第 {i+1} 页] ---\n{t.strip()}")
+            t = page.extract_text(extraction_mode="layout") or ""
         except Exception:
             pass
+
+        # 2. 若 layout 模式失败或提取为空，回退常规文本提取
+        if not t.strip():
+            try:
+                t = page.extract_text() or ""
+            except Exception:
+                pass
+
+        if t.strip():
+            # 3. 智能多列表格识别与 Markdown 转换
+            structured_text = convert_layout_tables_to_markdown(t.strip())
+            pages_text.append(f"--- [PDF 第 {i+1} 页] ---\n{structured_text}")
 
     if not pages_text:
         raise ValueError(
