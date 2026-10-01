@@ -30,3 +30,4 @@ requests>=2.32.3
 tiktoken>=0.7.0
 pypdf>=5.0.0
 loguru>=0.7.3
+laya>=0.3.20

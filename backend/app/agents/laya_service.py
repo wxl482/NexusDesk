@@ -12,6 +12,10 @@ if "NO_PROXY" in os.environ and "::1" in os.environ["NO_PROXY"]:
 if "no_proxy" in os.environ and "::1" in os.environ["no_proxy"]:
     os.environ["no_proxy"] = os.environ["no_proxy"].replace("::1/128", "").replace("::1", "")
 
+# 默认启用高性能 Hugging Face 镜像加速，确保国内云服务器部署时不卡死在模型权重下载
+if "HF_ENDPOINT" not in os.environ:
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 
 class LayaDecisionService:
     """

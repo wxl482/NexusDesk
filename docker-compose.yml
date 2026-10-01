@@ -120,12 +120,14 @@ services:
       - MILVUS_URI=http://milvus:19530
       - KMP_DUPLICATE_LIB_OK=TRUE
       - OMP_NUM_THREADS=1
+      - HF_ENDPOINT=https://hf-mirror.com
     env_file:
       - path: ./backend/.env
         required: false
     volumes:
       - ./backend/data:/app/data
       - ./backend/logs:/app/logs
+      - hfcache:/root/.cache/huggingface
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 15s
@@ -143,4 +145,5 @@ volumes:
   etcd:
   minio:
   milvus:
+  hfcache:
 

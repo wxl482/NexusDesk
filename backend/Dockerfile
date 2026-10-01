@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     KMP_DUPLICATE_LIB_OK=TRUE \
-    OMP_NUM_THREADS=1
+    OMP_NUM_THREADS=1 \
+    HF_ENDPOINT=https://hf-mirror.com
 
 # 安装系统级依赖与编译工具 (支持 C 扩展包如 psycopg, lxml 等编译与健康探针 curl)
 RUN apt-get update && apt-get install -y --no-install-recommends \
