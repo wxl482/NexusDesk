@@ -2,10 +2,10 @@
 /**
  * NexusDesk 可视化节点编排工作流画布 (Workflow Canvas)
  * 对标 Dify / ComfyUI 风格：
- * 1. 点阵网格无限画布，支持节点自由拖拽定位；
- * 2. 平滑 SVG 贝塞尔曲线动态连线与流光运行动画；
- * 3. 涵盖定时器、网页抓取、知识库提炼、AI周报生成、飞书Webhook通知全工种节点；
- * 4. 内置金标准自动化周报编排模版，支持单次全链路调试运行与周期性后台调度。
+ * 1. 无限点阵网格画布，支持按住空格/中键/背景平移 (Pan) 与鼠标滚轮平滑缩放 (Zoom)；
+ * 2. 窗口级高帧率平滑拖拽手感 (零掉帧、零失焦、自动吸附)；
+ * 3. 完美修复 SVG 贝塞尔连线 (杜绝黑色色块填充，支持渐变流光、状态流转与中点悬浮删除)；
+ * 4. 涵盖定时器、网页爬虫、知识库语义提炼、大模型周报撰写、飞书通知全流程闭环。
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useMessage } from 'naive-ui'
@@ -31,6 +31,9 @@ import {
   Settings2,
   Layers,
   ArrowRight,
+  Maximize2,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-vue-next'
 import { apiClient } from '../api/client'
 
@@ -81,16 +84,26 @@ const workflow = ref<WorkflowItem>({
 // 可用工作流列表
 const workflowList = ref<WorkflowItem[]>([])
 const selectedNodeId = ref<string | null>(null)
+const hoveredEdgeId = ref<string | null>(null)
 
-// 画布视图状态（平移与交互）
+// 画布视图状态（无限画布平移与缩放）
 const canvasRef = ref<HTMLDivElement | null>(null)
+const panX = ref(40)
+const panY = ref(40)
+const zoom = ref(1.0)
+const isPanning = ref(false)
+const panStart = ref({ x: 0, y: 0, initialPanX: 0, initialPanY: 0 })
+const isSpacePressed = ref(false)
+
+// 节点拖拽状态
 const isDraggingNode = ref(false)
 const draggedNodeId = ref<string | null>(null)
 const dragOffset = ref({ x: 0, y: 0 })
 
 // 连线创建状态
 const connectingSourceId = ref<string | null>(null)
-const mousePos = ref({ x: 0, y: 0 })
+const hoveredTargetPortNodeId = ref<string | null>(null)
+const mouseWorldPos = ref({ x: 0, y: 0 })
 
 // 执行状态与日志抽屉
 const isRunning = ref(false)
@@ -99,9 +112,9 @@ const showResultDrawer = ref(false)
 const executionResults = ref<any>(null)
 const executionLogs = ref<any[]>([])
 
-// 节点卡片尺寸常量 (用于计算端口坐标)
+// 节点卡片尺寸常量 (用于计算端口世界坐标)
 const NODE_WIDTH = 260
-const NODE_HEIGHT = 135
+const NODE_HEIGHT = 120
 
 // 节点元数据配置
 const NODE_TYPES: Record<string, { label: string; icon: any; color: string; bg: string; border: string; desc: string }> = {
@@ -160,7 +173,7 @@ const selectedNode = computed(() => {
   return workflow.value.nodes.find(n => n.id === selectedNodeId.value) || null
 })
 
-// 获取节点的输入与输出端口坐标
+// 获取节点的输入与输出端口世界坐标
 const getNodePortCoords = (node: WorkflowNode) => {
   return {
     input: { x: node.x, y: node.y + NODE_HEIGHT / 2 },
@@ -168,9 +181,9 @@ const getNodePortCoords = (node: WorkflowNode) => {
   }
 }
 
-// 计算贝塞尔连线路径
+// 计算贝塞尔连线路径 (水平 S 型控制曲线)
 const calculateBezierPath = (x1: number, y1: number, x2: number, y2: number) => {
-  const dx = Math.max(Math.abs(x2 - x1) * 0.5, 40)
+  const dx = Math.max(Math.abs(x2 - x1) * 0.5, 45)
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`
 }
 
@@ -211,53 +224,184 @@ const renderedEdges = computed<RenderedEdge[]>(() => {
   return result
 })
 
-// 鼠标拖拽移动节点逻辑
-const startDragNode = (node: WorkflowNode, e: MouseEvent) => {
-  if ((e.target as HTMLElement).closest('.port-handle') || (e.target as HTMLElement).closest('button')) {
-    return
+// 无限网格点阵背景动态样式
+const canvasGridStyle = computed(() => {
+  const size = 24 * zoom.value
+  return {
+    backgroundPosition: `${panX.value}px ${panY.value}px`,
+    backgroundSize: `${size}px ${size}px`,
   }
-  selectedNodeId.value = node.id
-  isDraggingNode.value = true
-  draggedNodeId.value = node.id
+})
 
-  const rect = canvasRef.value?.getBoundingClientRect()
-  if (rect) {
-    dragOffset.value = {
-      x: e.clientX - rect.left - node.x,
-      y: e.clientY - rect.top - node.y,
-    }
-  }
+// 视口内容变换样式
+const worldTransformStyle = computed(() => ({
+  transform: `translate3d(${panX.value}px, ${panY.value}px, 0) scale(${zoom.value})`,
+  transformOrigin: '0 0',
+}))
+
+// 快捷操作：缩放与视图复位
+const zoomIn = () => {
+  zoom.value = Math.min(zoom.value * 1.15, 2.2)
+}
+const zoomOut = () => {
+  zoom.value = Math.max(zoom.value * 0.85, 0.35)
+}
+const resetZoom = () => {
+  zoom.value = 1.0
 }
 
-const onCanvasMouseMove = (e: MouseEvent) => {
+// 视图自适应居中全部节点
+const fitView = () => {
+  if (workflow.value.nodes.length === 0) {
+    panX.value = 60
+    panY.value = 60
+    zoom.value = 1.0
+    return
+  }
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const n of workflow.value.nodes) {
+    minX = Math.min(minX, n.x)
+    minY = Math.min(minY, n.y)
+    maxX = Math.max(maxX, n.x + NODE_WIDTH)
+    maxY = Math.max(maxY, n.y + NODE_HEIGHT)
+  }
+
   const rect = canvasRef.value?.getBoundingClientRect()
   if (!rect) return
 
-  mousePos.value = {
-    x: e.clientX - rect.left,
-    y: e.clientY - rect.top,
+  const padding = 100
+  const graphWidth = maxX - minX + padding * 2
+  const graphHeight = maxY - minY + padding * 2
+
+  const scaleX = rect.width / graphWidth
+  const scaleY = rect.height / graphHeight
+  const newZoom = Math.min(Math.max(Math.min(scaleX, scaleY), 0.5), 1.2)
+
+  zoom.value = newZoom
+  panX.value = (rect.width - (maxX - minX) * newZoom) / 2 - minX * newZoom
+  panY.value = (rect.height - (maxY - minY) * newZoom) / 2 - minY * newZoom
+}
+
+// 鼠标滚轮缩放画布 (聚焦于鼠标指针位置)
+const onCanvasWheel = (e: WheelEvent) => {
+  e.preventDefault()
+  const factor = e.deltaY < 0 ? 1.08 : 0.92
+  const newZoom = Math.min(Math.max(zoom.value * factor, 0.35), 2.2)
+  const rect = canvasRef.value?.getBoundingClientRect()
+  if (!rect) return
+
+  const mouseCanvasX = e.clientX - rect.left
+  const mouseCanvasY = e.clientY - rect.top
+
+  // 保持鼠标指向的世界坐标不动进行缩放
+  panX.value = mouseCanvasX - (mouseCanvasX - panX.value) * (newZoom / zoom.value)
+  panY.value = mouseCanvasY - (mouseCanvasY - panY.value) * (newZoom / zoom.value)
+  zoom.value = newZoom
+}
+
+// 画布背景按下：触发画布平移
+const onCanvasMouseDown = (e: MouseEvent) => {
+  // 如果点击的是节点、按钮或端口，不触发画布平移
+  if ((e.target as HTMLElement).closest('.workflow-node') ||
+      (e.target as HTMLElement).closest('.port-handle') ||
+      (e.target as HTMLElement).closest('button') ||
+      (e.target as HTMLElement).closest('input')) {
+    return
   }
 
-  // 正在拖拽节点
-  if (isDraggingNode.value && draggedNodeId.value) {
-    const node = workflow.value.nodes.find(n => n.id === draggedNodeId.value)
-    if (node) {
-      node.x = Math.max(20, mousePos.value.x - dragOffset.value.x)
-      node.y = Math.max(20, mousePos.value.y - dragOffset.value.y)
+  // 左键点击背景或中键拖动画布
+  if (e.button === 0 || e.button === 1 || isSpacePressed.value) {
+    selectedNodeId.value = null
+    connectingSourceId.value = null
+    isPanning.value = true
+    panStart.value = {
+      x: e.clientX,
+      y: e.clientY,
+      initialPanX: panX.value,
+      initialPanY: panY.value,
     }
+    window.addEventListener('mousemove', onWindowMouseMove)
+    window.addEventListener('mouseup', onWindowMouseUp)
   }
 }
 
-const onCanvasMouseUp = () => {
+// 启动节点拖拽 (加入全局 window 监听，彻底杜绝掉帧与脱手)
+const startDragNode = (node: WorkflowNode, e: MouseEvent) => {
+  if ((e.target as HTMLElement).closest('.port-handle') ||
+      (e.target as HTMLElement).closest('button')) {
+    return
+  }
+  e.stopPropagation()
+
+  selectedNodeId.value = node.id
+  draggedNodeId.value = node.id
+  isDraggingNode.value = true
+
+  const rect = canvasRef.value?.getBoundingClientRect()
+  if (rect) {
+    const worldMouseX = (e.clientX - rect.left - panX.value) / zoom.value
+    const worldMouseY = (e.clientY - rect.top - panY.value) / zoom.value
+    dragOffset.value = {
+      x: worldMouseX - node.x,
+      y: worldMouseY - node.y,
+    }
+  }
+
+  window.addEventListener('mousemove', onWindowMouseMove)
+  window.addEventListener('mouseup', onWindowMouseUp)
+}
+
+// 全局鼠标移动处理
+const onWindowMouseMove = (e: MouseEvent) => {
+  const rect = canvasRef.value?.getBoundingClientRect()
+  if (!rect) return
+
+  // 更新当前世界坐标
+  const worldMouseX = (e.clientX - rect.left - panX.value) / zoom.value
+  const worldMouseY = (e.clientY - rect.top - panY.value) / zoom.value
+  mouseWorldPos.value = { x: worldMouseX, y: worldMouseY }
+
+  // 1. 处理节点拖动
+  if (isDraggingNode.value && draggedNodeId.value) {
+    const node = workflow.value.nodes.find(n => n.id === draggedNodeId.value)
+    if (node) {
+      node.x = Math.round(worldMouseX - dragOffset.value.x)
+      node.y = Math.round(worldMouseY - dragOffset.value.y)
+    }
+    return
+  }
+
+  // 2. 处理画布平移
+  if (isPanning.value) {
+    panX.value = panStart.value.initialPanX + (e.clientX - panStart.value.x)
+    panY.value = panStart.value.initialPanY + (e.clientY - panStart.value.y)
+    return
+  }
+}
+
+// 全局鼠标松开处理
+const onWindowMouseUp = () => {
   isDraggingNode.value = false
   draggedNodeId.value = null
-  connectingSourceId.value = null
+  isPanning.value = false
+
+  window.removeEventListener('mousemove', onWindowMouseMove)
+  window.removeEventListener('mouseup', onWindowMouseUp)
 }
 
 // 端口连线交互：开始从输出端口拉线
 const startConnecting = (nodeId: string, e: MouseEvent) => {
   e.stopPropagation()
   connectingSourceId.value = nodeId
+  const rect = canvasRef.value?.getBoundingClientRect()
+  if (rect) {
+    mouseWorldPos.value = {
+      x: (e.clientX - rect.left - panX.value) / zoom.value,
+      y: (e.clientY - rect.top - panY.value) / zoom.value,
+    }
+  }
+  window.addEventListener('mousemove', onWindowMouseMove)
 }
 
 // 端口连线交互：松开吸附在目标输入端口
@@ -270,7 +414,7 @@ const finishConnecting = (targetNodeId: string, e: MouseEvent) => {
 
   // 避免重复连线
   const exists = workflow.value.edges.some(
-    e => e.source === connectingSourceId.value && e.target === targetNodeId
+    edge => edge.source === connectingSourceId.value && edge.target === targetNodeId
   )
   if (!exists) {
     workflow.value.edges.push({
@@ -283,11 +427,19 @@ const finishConnecting = (targetNodeId: string, e: MouseEvent) => {
     message.success('已建立节点连接！')
   }
   connectingSourceId.value = null
+  window.removeEventListener('mousemove', onWindowMouseMove)
+}
+
+// 取消连线拉取
+const cancelConnecting = () => {
+  connectingSourceId.value = null
+  window.removeEventListener('mousemove', onWindowMouseMove)
 }
 
 // 删除连线
 const deleteEdge = (edgeId: string) => {
   workflow.value.edges = workflow.value.edges.filter(e => e.id !== edgeId)
+  message.info('已移除连线')
 }
 
 // 删除节点及其关联的所有连线
@@ -297,34 +449,40 @@ const deleteNode = (nodeId: string) => {
   if (selectedNodeId.value === nodeId) {
     selectedNodeId.value = null
   }
+  message.info('已删除节点')
 }
 
 // 向画布添加新节点
 const addNodeToCanvas = (type: WorkflowNode['type']) => {
   const meta = NODE_TYPES[type]
   const id = `node_${type}_${Date.now().toString(36)}`
+  
+  // 在当前视野中央偏右处生成节点
+  const rect = canvasRef.value?.getBoundingClientRect()
+  const centerX = rect ? (rect.width / 2 - panX.value) / zoom.value : 300
+  const centerY = rect ? (rect.height / 2 - panY.value) / zoom.value : 200
+
   const newNode: WorkflowNode = {
     id,
     type,
     title: meta.label,
-    x: 100 + (workflow.value.nodes.length % 5) * 60,
-    y: 120 + (workflow.value.nodes.length % 4) * 50,
+    x: Math.round(centerX - NODE_WIDTH / 2 + (workflow.value.nodes.length % 4) * 20),
+    y: Math.round(centerY - NODE_HEIGHT / 2 + (workflow.value.nodes.length % 4) * 20),
     config: {},
   }
 
-  // 赋初始默认配置
   if (type === 'timer') {
     newNode.config = { schedule_type: 'weekly', day_of_week: '5', time: '18:00', cron_expression: '0 18 * * 5' }
   } else if (type === 'crawler') {
     newNode.config = { url: 'https://news.ycombinator.com', timeout: 15 }
   } else if (type === 'rag') {
-    newNode.config = { query: '技术前沿与智能体进展', top_k: 3, category: 'default' }
+    newNode.config = { query: '技术前沿架构与大模型智能体演进', top_k: 3, category: 'default' }
   } else if (type === 'llm') {
     newNode.config = {
       model: 'deepseek-chat',
       temperature: 0.5,
       system_prompt: '你是一个专业周报分析师。',
-      prompt_template: '根据以下内容撰写周报：\n{{crawler_data}}\n\n{{rag_data}}',
+      prompt_template: '根据以下最新资料撰写周报：\n{{crawler_data}}\n\n{{rag_data}}',
     }
   } else if (type === 'feishu') {
     newNode.config = { webhook_url: '', title: '📊 NexusDesk AI 行业前沿深度洞察周报' }
@@ -344,6 +502,7 @@ const fetchWorkflows = async () => {
     if (list && list.length > 0) {
       workflowList.value = list
       workflow.value = list[0]
+      setTimeout(() => fitView(), 100)
     }
   } catch (err) {
     console.error('获取工作流列表失败:', err)
@@ -355,6 +514,7 @@ const switchWorkflow = (wf: WorkflowItem) => {
   workflow.value = JSON.parse(JSON.stringify(wf))
   selectedNodeId.value = null
   executionResults.value = null
+  setTimeout(() => fitView(), 80)
 }
 
 // 保存当前工作流配置
@@ -390,7 +550,7 @@ const runCurrentWorkflow = async () => {
   showResultDrawer.value = true
   executionLogs.value = []
 
-  // 重置各节点运行状态
+  // 重置各节点运行状态为待命
   workflow.value.nodes.forEach(n => {
     n.status = 'idle'
     n.output = null
@@ -398,7 +558,6 @@ const runCurrentWorkflow = async () => {
   })
 
   try {
-    // 视觉反馈：设置首个节点进入 running
     if (workflow.value.nodes.length > 0) {
       workflow.value.nodes[0].status = 'running'
     }
@@ -420,7 +579,7 @@ const runCurrentWorkflow = async () => {
     }
 
     if (res.success) {
-      message.success(`工作流全链路执行成功！总耗时 ${res.total_duration_sec}s`)
+      message.success(`🎉 工作流全链路执行成功！总耗时 ${res.total_duration_sec}s`)
     } else {
       message.warning('工作流执行完成，部分节点遇到异常')
     }
@@ -437,18 +596,39 @@ const copyText = (txt: string) => {
   message.success('已复制到剪贴板')
 }
 
+// 快捷键监听 (空格平移画布)
+const onKeyDown = (e: KeyboardEvent) => {
+  if (e.code === 'Space' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+    isSpacePressed.value = true
+  }
+}
+const onKeyUp = (e: KeyboardEvent) => {
+  if (e.code === 'Space') {
+    isSpacePressed.value = false
+  }
+}
+
 onMounted(() => {
   fetchWorkflows()
+  window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('keyup', onKeyUp)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('keyup', onKeyUp)
+  window.removeEventListener('mousemove', onWindowMouseMove)
+  window.removeEventListener('mouseup', onWindowMouseUp)
 })
 </script>
 
 <template>
   <div class="h-full w-full flex flex-col bg-gray-50 dark:bg-zinc-950 overflow-hidden select-none">
     <!-- 顶部工作流控制栏 -->
-    <header class="h-14 flex-shrink-0 flex items-center justify-between px-5 border-b border-gray-200 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md z-20">
+    <header class="h-14 flex-shrink-0 flex items-center justify-between px-5 border-b border-gray-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md z-20">
       <!-- 左侧：工作流名称与模版选择 -->
       <div class="flex items-center gap-3 min-w-0">
-        <div class="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200/80 dark:border-indigo-800/50 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+        <div class="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200/80 dark:border-indigo-800/50 flex items-center justify-center text-indigo-600 dark:text-indigo-400 flex-shrink-0">
           <Layers class="w-4 h-4" />
         </div>
         <div class="min-w-0">
@@ -471,7 +651,7 @@ onMounted(() => {
 
       <!-- 右侧：快捷操作 (添加节点、保存、调度、调试运行) -->
       <div class="flex items-center gap-2.5">
-        <!-- 节点添加抽屉菜单 -->
+        <!-- 节点添加菜单 -->
         <div class="relative group">
           <button
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-gray-800 dark:text-zinc-200 transition-colors cursor-pointer"
@@ -498,383 +678,509 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- 周期自动调度切换 -->
+        <!-- 开启/关闭周期定时调度 -->
         <button
           @click="toggleSchedule"
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer"
-          :class="workflow.is_scheduled ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800' : 'bg-white dark:bg-zinc-900 border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300'"
-          title="将此编排任务交给后台根据配置的 Cron 周期自动执行"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer"
+          :class="workflow.is_scheduled
+            ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 border-amber-300 dark:border-amber-800 hover:bg-amber-100'
+            : 'bg-white dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-700'"
         >
           <Clock class="w-3.5 h-3.5" />
           <span>{{ workflow.is_scheduled ? '暂停调度' : '开启周期调度' }}</span>
         </button>
 
-        <!-- 保存按钮 -->
+        <!-- 保存当前工作流 -->
         <button
           @click="saveCurrentWorkflow"
           :disabled="isSaving"
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 hover:bg-gray-50 dark:hover:bg-zinc-800 text-gray-800 dark:text-zinc-200 transition-colors cursor-pointer"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-zinc-700 transition-colors cursor-pointer disabled:opacity-50"
         >
-          <Save class="w-3.5 h-3.5" />
-          <span>{{ isSaving ? '保存中...' : '保存编排' }}</span>
+          <Loader2 v-if="isSaving" class="w-3.5 h-3.5 animate-spin" />
+          <Save v-else class="w-3.5 h-3.5" />
+          <span>保存编排</span>
         </button>
 
-        <!-- 立即运行测试按钮 -->
+        <!-- 立即运行测试 -->
         <button
           @click="runCurrentWorkflow"
           :disabled="isRunning"
-          class="flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white shadow-sm transition-all cursor-pointer disabled:opacity-50"
+          class="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-95 shadow-sm transition-all cursor-pointer disabled:opacity-50"
         >
           <Loader2 v-if="isRunning" class="w-3.5 h-3.5 animate-spin" />
           <Play v-else class="w-3.5 h-3.5 fill-current" />
-          <span>{{ isRunning ? '正在全链路执行...' : '立即运行测试' }}</span>
+          <span>{{ isRunning ? '全链路运行中...' : '立即运行测试' }}</span>
         </button>
       </div>
     </header>
 
-    <!-- 中间主体：可视化点阵画布 + 右侧参数配置抽屉 -->
+    <!-- 中间主体：可视化无限点阵画布 + 右侧参数配置抽屉 -->
     <div class="flex-1 relative overflow-hidden flex">
       <!-- 1. 无限点阵画布 -->
       <div
         ref="canvasRef"
-        @mousemove="onCanvasMouseMove"
-        @mouseup="onCanvasMouseUp"
-        class="flex-1 h-full relative overflow-hidden bg-[#fafafa] dark:bg-[#0c0c0e] select-none cursor-crosshair"
-        style="background-image: radial-gradient(circle, rgba(160, 160, 160, 0.25) 1px, transparent 1px); background-size: 24px 24px;"
+        @mousedown="onCanvasMouseDown"
+        @wheel="onCanvasWheel"
+        class="flex-1 h-full relative overflow-hidden bg-[#f8f9fa] dark:bg-[#09090b] select-none"
+        :class="[
+          isSpacePressed || isPanning ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
+          connectingSourceId ? 'cursor-crosshair' : ''
+        ]"
+        :style="{
+          backgroundImage: 'radial-gradient(circle, rgba(140, 140, 160, 0.28) 1.2px, transparent 1.2px)',
+          ...canvasGridStyle
+        }"
       >
-        <!-- 连线 SVG 层 -->
-        <svg class="absolute inset-0 w-full h-full pointer-events-none z-10">
-          <defs>
-            <linearGradient id="edge-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#818cf8" />
-              <stop offset="100%" stop-color="#c084fc" />
-            </linearGradient>
-            <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-              <path d="M 0 1 L 8 5 L 0 9 z" fill="#818cf8" />
-            </marker>
-          </defs>
+        <!-- 视口缩放平移内容容器 (SVG 连线 + 节点卡片) -->
+        <div
+          class="absolute inset-0 w-full h-full pointer-events-none"
+          :style="worldTransformStyle"
+        >
+          <!-- 连线 SVG 层 -->
+          <svg class="absolute inset-0 w-[5000px] h-[5000px] pointer-events-none z-0 overflow-visible">
+            <defs>
+              <linearGradient id="edge-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#6366f1" />
+                <stop offset="100%" stop-color="#a855f7" />
+              </linearGradient>
+              <marker id="arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#a855f7" />
+              </marker>
+            </defs>
 
-          <!-- 已确立的连线 -->
-          <g v-for="edge in renderedEdges" :key="edge.id">
-            <!-- 底层加宽便于点击/悬停删除 -->
+            <!-- 已确立的连线 -->
+            <g
+              v-for="edge in renderedEdges"
+              :key="edge.id"
+              class="pointer-events-auto"
+              @mouseenter="hoveredEdgeId = edge.id"
+              @mouseleave="hoveredEdgeId = null"
+            >
+              <!-- 底层加宽透明探测区域 (绝对保证 fill="none"，防止黑色大块产生) -->
+              <path
+                :d="edge.path"
+                stroke="transparent"
+                stroke-width="22"
+                fill="none"
+                class="cursor-pointer"
+                @click="deleteEdge(edge.id)"
+              />
+              <!-- 视觉可见连线 -->
+              <path
+                :d="edge.path"
+                :stroke="hoveredEdgeId === edge.id ? '#ef4444' : 'url(#edge-gradient)'"
+                :stroke-width="edge.isRunning ? '3' : (hoveredEdgeId === edge.id ? '2.5' : '2')"
+                fill="none"
+                stroke-linecap="round"
+                :stroke-dasharray="edge.isRunning ? '8 6' : 'none'"
+                :class="edge.isRunning ? 'animate-flow' : ''"
+                marker-end="url(#arrow)"
+                class="transition-colors duration-200"
+              />
+            </g>
+
+            <!-- 正在拖拽拉扯中的临时连线 (绝对保证 fill="none") -->
             <path
-              :d="edge.path"
-              stroke="transparent"
-              stroke-width="16"
-              class="pointer-events-auto cursor-pointer"
-              @click="deleteEdge(edge.id)"
-            />
-            <!-- 视觉可见连线 -->
-            <path
-              :d="edge.path"
-              stroke="url(#edge-gradient)"
-              :stroke-width="edge.isRunning ? '3' : '2'"
+              v-if="connectingSourceId"
+              :d="calculateBezierPath(
+                getNodePortCoords(workflow.nodes.find(n => n.id === connectingSourceId)!).output.x,
+                getNodePortCoords(workflow.nodes.find(n => n.id === connectingSourceId)!).output.y,
+                mouseWorldPos.x,
+                mouseWorldPos.y
+              )"
+              stroke="#6366f1"
+              stroke-width="2.5"
+              stroke-dasharray="6 4"
               fill="none"
               stroke-linecap="round"
-              :stroke-dasharray="edge.isRunning ? '6 4' : 'none'"
-              :class="edge.isRunning ? 'animate-flow' : ''"
-              marker-end="url(#arrow)"
+              class="animate-pulse"
             />
-          </g>
+          </svg>
 
-          <!-- 正在拖拽拉扯中的临时连线 -->
-          <path
-            v-if="connectingSourceId"
-            :d="calculateBezierPath(
-              getNodePortCoords(workflow.nodes.find(n => n.id === connectingSourceId)!).output.x,
-              getNodePortCoords(workflow.nodes.find(n => n.id === connectingSourceId)!).output.y,
-              mousePos.x,
-              mousePos.y
-            )"
-            stroke="#6366f1"
-            stroke-width="2"
-            stroke-dasharray="5 5"
-            fill="none"
-          />
-        </svg>
-
-        <!-- 节点卡片层 -->
-        <div
-          v-for="node in workflow.nodes"
-          :key="node.id"
-          @mousedown="startDragNode(node, $event)"
-          :style="{
-            transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
-            width: `${NODE_WIDTH}px`,
-          }"
-          class="absolute z-20 rounded-2xl bg-white dark:bg-zinc-900 border shadow-md transition-shadow cursor-grab active:cursor-grabbing select-none"
-          :class="[
-            selectedNodeId === node.id ? 'ring-2 ring-indigo-500 shadow-xl border-indigo-500' : 'border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700',
-            node.status === 'running' ? 'ring-2 ring-indigo-500 animate-pulse' : '',
-            node.status === 'completed' ? 'border-emerald-500' : '',
-            node.status === 'error' ? 'border-rose-500' : '',
-          ]"
-        >
-          <!-- 节点顶部标头：图标、标题、状态徽章与删除按钮 -->
+          <!-- 节点卡片层 -->
           <div
-            class="px-3.5 py-2.5 rounded-t-2xl border-b flex items-center justify-between"
-            :class="[NODE_TYPES[node.type]?.bg || 'bg-gray-50', NODE_TYPES[node.type]?.border || 'border-gray-200']"
+            v-for="node in workflow.nodes"
+            :key="node.id"
+            class="workflow-node absolute pointer-events-auto transition-shadow"
+            :style="{
+              left: `${node.x}px`,
+              top: `${node.y}px`,
+              width: `${NODE_WIDTH}px`,
+              zIndex: draggedNodeId === node.id ? 40 : (selectedNodeId === node.id ? 30 : 10),
+            }"
+            @mousedown="startDragNode(node, $event)"
           >
-            <div class="flex items-center gap-2 min-w-0">
-              <component :is="NODE_TYPES[node.type]?.icon || Sparkles" class="w-4 h-4 flex-shrink-0" :class="NODE_TYPES[node.type]?.color || 'text-gray-600'" />
-              <span class="text-xs font-bold text-gray-900 dark:text-white truncate">
-                {{ node.title }}
-              </span>
-            </div>
-            
-            <div class="flex items-center gap-1.5 flex-shrink-0">
-              <!-- 运行状态指示器 -->
-              <span v-if="node.status === 'running'" class="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
-              <CheckCircle2 v-else-if="node.status === 'completed'" class="w-3.5 h-3.5 text-emerald-500" />
-              <AlertCircle v-else-if="node.status === 'error'" class="w-3.5 h-3.5 text-rose-500" />
+            <!-- 节点主体卡片 -->
+            <div
+              class="relative rounded-2xl border bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md transition-all duration-150 cursor-grab active:cursor-grabbing group select-none"
+              :class="[
+                selectedNodeId === node.id
+                  ? 'border-indigo-500 shadow-xl ring-2 ring-indigo-500/20'
+                  : 'border-gray-200/90 dark:border-zinc-800 shadow-sm hover:shadow-md hover:border-gray-300 dark:hover:border-zinc-700',
+                node.status === 'running' ? 'border-amber-400 ring-2 ring-amber-400/40 shadow-amber-500/10' : '',
+                node.status === 'completed' ? 'border-emerald-500 ring-1 ring-emerald-500/30' : '',
+                node.status === 'error' ? 'border-rose-500 ring-2 ring-rose-500/30' : ''
+              ]"
+            >
+              <!-- 卡片头部 -->
+              <div class="px-3.5 py-2.5 border-b border-gray-100 dark:border-zinc-800/80 flex items-center justify-between">
+                <div class="flex items-center gap-2 min-w-0">
+                  <div
+                    class="w-6 h-6 rounded-md flex items-center justify-center border flex-shrink-0"
+                    :class="[NODE_TYPES[node.type]?.bg, NODE_TYPES[node.type]?.border]"
+                  >
+                    <component :is="NODE_TYPES[node.type]?.icon" class="w-3.5 h-3.5" :class="NODE_TYPES[node.type]?.color" />
+                  </div>
+                  <span class="text-xs font-bold text-gray-800 dark:text-zinc-200 truncate">
+                    {{ node.title }}
+                  </span>
+                </div>
 
-              <button
-                @click.stop="deleteNode(node.id)"
-                class="p-1 rounded text-gray-400 hover:text-rose-500 transition-colors"
-                title="删除节点"
+                <!-- 状态与快捷删除 -->
+                <div class="flex items-center gap-1.5 flex-shrink-0">
+                  <span v-if="node.status === 'running'" class="flex items-center text-amber-500 text-[10px]">
+                    <Loader2 class="w-3 h-3 animate-spin" />
+                  </span>
+                  <span v-else-if="node.status === 'completed'" class="flex items-center text-emerald-500 text-[10px]">
+                    <CheckCircle2 class="w-3.5 h-3.5" />
+                  </span>
+                  <span v-else-if="node.status === 'error'" class="flex items-center text-rose-500 text-[10px]">
+                    <AlertCircle class="w-3.5 h-3.5" />
+                  </span>
+
+                  <button
+                    @click.stop="deleteNode(node.id)"
+                    class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-rose-500 p-0.5 rounded transition-all cursor-pointer"
+                    title="删除节点"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <!-- 卡片核心参数简报 -->
+              <div class="px-3.5 py-2 text-[11px] text-gray-600 dark:text-zinc-400 space-y-1">
+                <template v-if="node.type === 'timer'">
+                  <div class="truncate">周期: {{ node.config.cron_expression || '每周五 18:00 (0 18 * * 5)' }}</div>
+                </template>
+                <template v-else-if="node.type === 'crawler'">
+                  <div class="truncate text-gray-500 font-mono text-[10px]">URL: {{ node.config.url || 'https://news.ycombinator.com' }}</div>
+                </template>
+                <template v-else-if="node.type === 'rag'">
+                  <div class="truncate">提炼主题: {{ node.config.query || '技术前沿架构与大模型演进' }}</div>
+                  <div class="text-[10px] text-gray-400">召回数量: Top {{ node.config.top_k || 3 }} 切片</div>
+                </template>
+                <template v-else-if="node.type === 'llm'">
+                  <div class="truncate font-mono text-[10px]">模型: {{ node.config.model || 'deepseek-chat' }}</div>
+                  <div class="truncate text-gray-400 text-[10px]">提示词: {{ node.config.prompt_template?.slice(0, 22) }}...</div>
+                </template>
+                <template v-else-if="node.type === 'feishu'">
+                  <div class="truncate">通道: {{ node.config.webhook_url ? '已配置 Webhook' : '模拟推送/待填 Webhook' }}</div>
+                </template>
+                <template v-else-if="node.type === 'email'">
+                  <div class="truncate">收件: {{ node.config.recipient || 'team@example.com' }}</div>
+                </template>
+              </div>
+
+              <!-- 输入端口 (左侧吸附点) -->
+              <div
+                v-if="node.type !== 'timer'"
+                class="port-handle absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white dark:bg-zinc-800 border-2 border-indigo-500 cursor-crosshair hover:scale-125 transition-transform flex items-center justify-center shadow-md z-30"
+                :class="connectingSourceId && connectingSourceId !== node.id ? 'ring-4 ring-emerald-400 animate-pulse' : ''"
+                @mouseenter="hoveredTargetPortNodeId = node.id"
+                @mouseleave="hoveredTargetPortNodeId = null"
+                @mouseup="finishConnecting(node.id, $event)"
+                title="输入端口：将前置节点输出连线至此"
               >
-                <Trash2 class="w-3 h-3" />
-              </button>
+                <div class="w-1.5 h-1.5 rounded-full bg-indigo-500 pointer-events-none" />
+              </div>
+
+              <!-- 输出端口 (右侧发射点) -->
+              <div
+                v-if="node.type !== 'feishu' && node.type !== 'email'"
+                class="port-handle absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white dark:bg-zinc-800 border-2 border-indigo-500 cursor-crosshair hover:scale-125 transition-transform flex items-center justify-center shadow-md z-30"
+                @mousedown="startConnecting(node.id, $event)"
+                title="输出端口：按住或点击拉线连接后续节点"
+              >
+                <div class="w-1.5 h-1.5 rounded-full bg-indigo-500 pointer-events-none" />
+              </div>
             </div>
           </div>
+        </div>
 
-          <!-- 节点主体简要参数预览 -->
-          <div class="p-3 text-[11px] text-gray-500 dark:text-zinc-400 space-y-1">
-            <template v-if="node.type === 'timer'">
-              <div>周期: <span class="font-mono text-gray-800 dark:text-zinc-200">每周五 18:00 ({{ node.config.cron_expression }})</span></div>
-            </template>
-            <template v-else-if="node.type === 'crawler'">
-              <div class="truncate">URL: <span class="font-mono text-gray-800 dark:text-zinc-200">{{ node.config.url }}</span></div>
-            </template>
-            <template v-else-if="node.type === 'rag'">
-              <div class="truncate">提炼主题: <span class="text-gray-800 dark:text-zinc-200">{{ node.config.query }}</span></div>
-              <div>召回数量: <span class="font-mono text-gray-800 dark:text-zinc-200">Top {{ node.config.top_k }} 切片</span></div>
-            </template>
-            <template v-else-if="node.type === 'llm'">
-              <div>模型: <span class="font-mono text-gray-800 dark:text-zinc-200">{{ node.config.model }}</span></div>
-              <div class="truncate">提示词: <span class="text-gray-800 dark:text-zinc-200">{{ node.config.prompt_template }}</span></div>
-            </template>
-            <template v-else-if="node.type === 'feishu'">
-              <div class="truncate">飞书群: <span class="text-gray-800 dark:text-zinc-200">{{ node.config.title }}</span></div>
-            </template>
-          </div>
-
-          <!-- 左侧输入端口 (Input Port) -->
-          <div
-            v-if="node.type !== 'timer'"
-            @mouseup="finishConnecting(node.id, $event)"
-            class="port-handle absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white dark:bg-zinc-900 border-2 border-indigo-500 hover:scale-125 transition-transform cursor-pointer flex items-center justify-center shadow-xs"
-            title="连接输入"
+        <!-- 画布左下角浮动控制条 (缩放/复位/居中自适应) -->
+        <div class="absolute bottom-5 left-5 z-20 flex items-center gap-1 p-1 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md rounded-xl border border-gray-200 dark:border-zinc-800 shadow-lg text-gray-700 dark:text-zinc-300">
+          <button
+            @click="zoomIn"
+            class="p-1.5 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+            title="放大画布"
           >
-            <div class="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-          </div>
-
-          <!-- 右侧输出端口 (Output Port) -->
-          <div
-            v-if="node.type !== 'feishu' && node.type !== 'email'"
-            @mousedown="startConnecting(node.id, $event)"
-            class="port-handle absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white dark:bg-zinc-900 border-2 border-indigo-500 hover:scale-125 transition-transform cursor-pointer flex items-center justify-center shadow-xs"
-            title="按住拖拽连线至下级节点"
+            <ZoomIn class="w-4 h-4" />
+          </button>
+          <button
+            @click="zoomOut"
+            class="p-1.5 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+            title="缩小画布"
           >
-            <div class="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-          </div>
+            <ZoomOut class="w-4 h-4" />
+          </button>
+          <button
+            @click="resetZoom"
+            class="px-2 py-1 text-[11px] font-mono hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+            title="重置缩放 100%"
+          >
+            {{ Math.round(zoom * 100) }}%
+          </button>
+          <div class="w-px h-3.5 bg-gray-200 dark:bg-zinc-700 mx-0.5" />
+          <button
+            @click="fitView"
+            class="flex items-center gap-1 px-2 py-1 text-[11px] font-medium hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+            title="居中自适应全部节点"
+          >
+            <Maximize2 class="w-3.5 h-3.5" />
+            <span>自适应居中</span>
+          </button>
+        </div>
+
+        <!-- 画布空白处操作小贴士 -->
+        <div class="absolute top-4 left-5 z-10 pointer-events-none text-[11px] text-gray-400 dark:text-zinc-500 flex items-center gap-2">
+          <span class="px-1.5 py-0.5 rounded bg-gray-200/70 dark:bg-zinc-800 font-mono text-[10px]">空格 + 拖动</span> 或 <span class="px-1.5 py-0.5 rounded bg-gray-200/70 dark:bg-zinc-800 font-mono text-[10px]">滚轮</span> 可无限平移与缩放画布
         </div>
       </div>
 
-      <!-- 2. 右侧节点属性配置面板 (Inspector) -->
+      <!-- 2. 右侧参数配置抽屉 (Inspector Panel) -->
       <aside
         v-if="selectedNode"
-        class="w-80 border-l border-gray-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md flex flex-col z-20 shadow-xl"
+        class="w-80 flex-shrink-0 border-l border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col z-20 shadow-xl"
       >
-        <div class="h-12 px-4 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between">
-          <div class="flex items-center gap-2 text-xs font-bold text-gray-900 dark:text-white">
-            <Settings2 class="w-4 h-4 text-indigo-500" />
-            <span>节点属性配置</span>
+        <div class="h-14 px-4 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <component :is="NODE_TYPES[selectedNode.type]?.icon" class="w-4 h-4" :class="NODE_TYPES[selectedNode.type]?.color" />
+            <span class="text-xs font-bold text-gray-900 dark:text-white">配置节点：{{ selectedNode.title }}</span>
           </div>
-          <button @click="selectedNodeId = null" class="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-zinc-200">
+          <button
+            @click="selectedNodeId = null"
+            class="p-1 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 cursor-pointer"
+          >
             <X class="w-4 h-4" />
           </button>
         </div>
 
         <div class="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-          <!-- 标题设置 -->
+          <!-- 节点通用标题 -->
           <div>
-            <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">节点显示名称</label>
+            <label class="block text-[11px] font-semibold text-gray-500 mb-1">节点名称</label>
             <input
               v-model="selectedNode.title"
-              class="w-full px-3 py-1.5 rounded-lg border border-gray-300 dark:border-zinc-700 bg-transparent text-gray-900 dark:text-zinc-100"
+              type="text"
+              class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
             />
           </div>
 
-          <!-- 各节点专属参数配置 -->
+          <!-- 分类型详细参数配置 -->
+          <!-- 1. 定时器 -->
           <template v-if="selectedNode.type === 'timer'">
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">调度频率</label>
-              <select
-                v-model="selectedNode.config.schedule_type"
-                class="w-full px-3 py-1.5 rounded-lg border border-gray-300 dark:border-zinc-700 bg-transparent"
-              >
-                <option value="weekly">每周定时</option>
-                <option value="daily">每天定时</option>
-                <option value="hourly">每隔N小时</option>
-              </select>
-            </div>
-            <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">标准 Cron 表达式</label>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">Cron 表达式</label>
               <input
                 v-model="selectedNode.config.cron_expression"
+                type="text"
                 placeholder="0 18 * * 5"
-                class="w-full px-3 py-1.5 rounded-lg font-mono border border-gray-300 dark:border-zinc-700 bg-transparent"
+                class="w-full font-mono px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
-              <span class="text-[10px] text-gray-400 mt-1 block">示例：0 18 * * 5 表示每周五下午 18:00 执行</span>
+              <p class="text-[10px] text-gray-400 mt-1">例如: 0 18 * * 5 表示每周五下午 18:00 自动触发</p>
             </div>
           </template>
 
-          <template v-else-if="selectedNode.type === 'crawler'">
+          <!-- 2. 爬虫 -->
+          <template v-if="selectedNode.type === 'crawler'">
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">抓取目标 URL</label>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">目标抓取 URL</label>
               <input
                 v-model="selectedNode.config.url"
-                class="w-full px-3 py-1.5 rounded-lg font-mono border border-gray-300 dark:border-zinc-700 bg-transparent"
+                type="text"
+                placeholder="https://news.ycombinator.com"
+                class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">超时时间 (秒)</label>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">抓取超时时长 (秒)</label>
               <input
                 v-model.number="selectedNode.config.timeout"
                 type="number"
-                class="w-full px-3 py-1.5 rounded-lg border border-gray-300 dark:border-zinc-700 bg-transparent"
+                class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
           </template>
 
-          <template v-else-if="selectedNode.type === 'rag'">
+          <!-- 3. RAG 知识库检索 -->
+          <template v-if="selectedNode.type === 'rag'">
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">知识库提炼问题 / 主题</label>
-              <textarea
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">检索提炼主题 (Query)</label>
+              <input
                 v-model="selectedNode.config.query"
-                rows="2"
-                class="w-full px-3 py-1.5 rounded-lg border border-gray-300 dark:border-zinc-700 bg-transparent resize-none"
+                type="text"
+                class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">召回切片数 (Top-K)</label>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">知识召回篇数 (Top-K)</label>
               <input
                 v-model.number="selectedNode.config.top_k"
                 type="number"
-                class="w-full px-3 py-1.5 rounded-lg border border-gray-300 dark:border-zinc-700 bg-transparent"
+                min="1"
+                max="10"
+                class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
           </template>
 
-          <template v-else-if="selectedNode.type === 'llm'">
+          <!-- 4. LLM 深度合成 -->
+          <template v-if="selectedNode.type === 'llm'">
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">大语言模型</label>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">调用模型</label>
               <input
                 v-model="selectedNode.config.model"
-                class="w-full px-3 py-1.5 rounded-lg font-mono border border-gray-300 dark:border-zinc-700 bg-transparent"
+                type="text"
+                placeholder="deepseek-chat"
+                class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">系统人设 (System Prompt)</label>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">系统提示词 (System Prompt)</label>
               <textarea
                 v-model="selectedNode.config.system_prompt"
                 rows="2"
-                class="w-full px-3 py-1.5 rounded-lg border border-gray-300 dark:border-zinc-700 bg-transparent resize-none"
+                class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">提示词模版 (支持变量插值)</label>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">聚合模版 (支持变量插值)</label>
               <textarea
                 v-model="selectedNode.config.prompt_template"
-                rows="5"
-                class="w-full px-3 py-1.5 rounded-lg font-mono text-[11px] border border-gray-300 dark:border-zinc-700 bg-transparent"
+                rows="4"
+                class="w-full font-mono text-[11px] px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
-              <div class="flex items-center gap-1.5 mt-1.5">
-                <span class="text-[10px] text-gray-400">可用插值标签:</span>
-                <code @click="selectedNode.config.prompt_template += ' {{crawler_data}}'" class="px-1 py-0.5 rounded bg-blue-50 dark:bg-blue-950 text-blue-600 text-[10px] cursor-pointer">+ crawler_data</code>
-                <code @click="selectedNode.config.prompt_template += ' {{rag_data}}'" class="px-1 py-0.5 rounded bg-purple-50 dark:bg-purple-950 text-purple-600 text-[10px] cursor-pointer">+ rag_data</code>
-              </div>
+              <p class="text-[10px] text-gray-400 mt-1">支持插值: <code class="text-indigo-500">\{\{crawler_data\}\}</code>, <code class="text-indigo-500">\{\{rag_data\}\}</code></p>
             </div>
           </template>
 
-          <template v-else-if="selectedNode.type === 'feishu'">
+          <!-- 5. 飞书 Webhook -->
+          <template v-if="selectedNode.type === 'feishu'">
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">飞书自定义机器人 Webhook URL</label>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">飞书机器人 Webhook URL</label>
               <input
                 v-model="selectedNode.config.webhook_url"
+                type="text"
                 placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..."
-                class="w-full px-3 py-1.5 rounded-lg font-mono text-[11px] border border-gray-300 dark:border-zinc-700 bg-transparent"
+                class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
-              <span class="text-[10px] text-gray-400 mt-1 block">未填写时以模拟演练模式执行，不打扰真实群聊</span>
+              <p class="text-[10px] text-gray-400 mt-1">留空时将自动启用模拟发信预览</p>
             </div>
             <div>
-              <label class="block font-semibold text-gray-700 dark:text-zinc-300 mb-1">通知卡片大标题</label>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">通知卡片标题</label>
               <input
                 v-model="selectedNode.config.title"
-                class="w-full px-3 py-1.5 rounded-lg border border-gray-300 dark:border-zinc-700 bg-transparent"
+                type="text"
+                class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
           </template>
+
+          <!-- 6. 邮件通知 -->
+          <template v-if="selectedNode.type === 'email'">
+            <div>
+              <label class="block text-[11px] font-semibold text-gray-500 mb-1">接收人邮箱地址</label>
+              <input
+                v-model="selectedNode.config.recipient"
+                type="email"
+                class="w-full px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+          </template>
+
+          <!-- 节点执行输出明细 -->
+          <div v-if="selectedNode.output" class="pt-3 border-t border-gray-200 dark:border-zinc-800">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[11px] font-bold text-gray-700 dark:text-zinc-300">上一次运行产物</span>
+              <button
+                @click="copyText(typeof selectedNode.output === 'object' ? JSON.stringify(selectedNode.output, null, 2) : String(selectedNode.output))"
+                class="text-indigo-500 hover:text-indigo-600 flex items-center gap-1 cursor-pointer"
+              >
+                <Copy class="w-3 h-3" />
+                <span>复制</span>
+              </button>
+            </div>
+            <pre class="p-2.5 rounded-lg bg-gray-100 dark:bg-zinc-950 font-mono text-[10px] text-gray-800 dark:text-zinc-200 max-h-48 overflow-y-auto whitespace-pre-wrap break-all">{{ typeof selectedNode.output === 'object' ? JSON.stringify(selectedNode.output, null, 2) : selectedNode.output }}</pre>
+          </div>
         </div>
       </aside>
     </div>
 
-    <!-- 底部执行结果与产物抽屉面板 (可折叠展示) -->
+    <!-- 底部执行结果与周报预览抽屉 -->
     <div
       v-if="showResultDrawer"
-      class="h-64 flex-shrink-0 border-t border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl flex flex-col z-30 transition-all"
+      class="h-64 flex-shrink-0 border-t border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col z-30 shadow-2xl"
     >
-      <div class="h-10 px-4 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between text-xs font-semibold bg-gray-50/70 dark:bg-zinc-800/40">
-        <div class="flex items-center gap-2 text-gray-800 dark:text-zinc-200">
+      <div class="h-10 px-4 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between bg-gray-50/50 dark:bg-zinc-900">
+        <div class="flex items-center gap-2">
           <Play class="w-3.5 h-3.5 text-indigo-500 fill-current" />
-          <span>工作流全链路执行控制台与阶段产物</span>
-          <span v-if="executionResults" class="text-[10px] text-gray-400 font-normal">
+          <span class="text-xs font-bold text-gray-800 dark:text-white">工作流全链路执行控制台与阶段产物</span>
+          <span v-if="executionResults" class="text-[10px] text-gray-400">
             (总耗时: {{ executionResults.total_duration_sec }}s)
           </span>
         </div>
-        <button @click="showResultDrawer = false" class="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-zinc-200">
+        <button
+          @click="showResultDrawer = false"
+          class="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-zinc-200 rounded cursor-pointer"
+        >
           <X class="w-4 h-4" />
         </button>
       </div>
 
       <div class="flex-1 flex overflow-hidden">
-        <!-- 左侧：执行步骤日志流 -->
-        <div class="w-1/3 border-r border-gray-200 dark:border-zinc-800 p-3 overflow-y-auto space-y-1.5 font-mono text-[11px]">
+        <!-- 左半部分：运行流水日志 -->
+        <div class="w-1/3 border-r border-gray-200 dark:border-zinc-800 p-3 overflow-y-auto space-y-2 font-mono text-[11px]">
+          <div v-if="executionLogs.length === 0" class="text-gray-400 text-center py-8">
+            准备执行全链路 DAG 管道...
+          </div>
           <div
             v-for="(log, idx) in executionLogs"
             :key="idx"
-            class="flex items-start gap-2 py-1 px-2 rounded"
-            :class="log.status === 'completed' ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/20' : (log.status === 'error' ? 'text-rose-600 bg-rose-50/50' : 'text-gray-600 dark:text-zinc-400')"
+            class="flex items-start gap-2"
           >
-            <span class="text-gray-400 flex-shrink-0">{{ log.time }}</span>
-            <span class="font-bold flex-shrink-0">[{{ log.node_title }}]</span>
-            <span class="truncate flex-1">{{ log.message }}</span>
-          </div>
-          <div v-if="executionLogs.length === 0" class="text-gray-400 text-center py-8">
-            点击上方「立即运行测试」开始追踪执行
+            <span class="text-gray-400 text-[10px]">{{ log.time }}</span>
+            <span
+              class="font-semibold px-1 rounded text-[10px]"
+              :class="log.status === 'completed' ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-950/40' : (log.status === 'error' ? 'text-rose-500 bg-rose-50 dark:bg-rose-950/40' : 'text-amber-500 bg-amber-50 dark:bg-amber-950/40')"
+            >
+              [{{ log.node_title }}]
+            </span>
+            <span class="text-gray-700 dark:text-zinc-300 flex-1 truncate">{{ log.message }}</span>
           </div>
         </div>
 
-        <!-- 右侧：最终产物预览 (周报结果或飞书响应) -->
-        <div class="flex-1 p-4 overflow-y-auto text-xs space-y-3">
-          <div v-if="executionResults?.results?.node_llm?.output" class="space-y-2">
-            <div class="flex items-center justify-between">
-              <span class="font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
+        <!-- 右半部分：最终 AI 周报或交付成果呈现 -->
+        <div class="flex-1 p-4 overflow-y-auto">
+          <div v-if="executionResults?.results?.node_llm?.output" class="space-y-3">
+            <div class="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-zinc-800">
+              <span class="text-xs font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
                 <Sparkles class="w-4 h-4 text-emerald-500" />
-                <span>AI 深度合成周报交付预览</span>
+                <span>生成结构化周报产物</span>
               </span>
               <button
                 @click="copyText(executionResults.results.node_llm.output)"
-                class="flex items-center gap-1 px-2 py-1 rounded border border-gray-200 dark:border-zinc-700 hover:bg-gray-100 text-[11px] cursor-pointer"
+                class="px-2 py-1 rounded bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-[10px] font-semibold flex items-center gap-1 hover:bg-indigo-100 transition-colors cursor-pointer"
               >
                 <Copy class="w-3 h-3" />
-                <span>复制周报内容</span>
+                <span>复制周报正文</span>
               </button>
             </div>
-            <pre class="p-3 rounded-xl bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 font-sans whitespace-pre-wrap leading-relaxed text-gray-800 dark:text-zinc-200">{{ executionResults.results.node_llm.output }}</pre>
+            <div class="prose prose-xs dark:prose-invert max-w-none text-gray-800 dark:text-zinc-200 whitespace-pre-wrap leading-relaxed font-sans text-xs">
+              {{ executionResults.results.node_llm.output }}
+            </div>
           </div>
-          <div v-else class="text-center text-gray-400 py-12 text-xs">
+          <div v-else class="h-full flex items-center justify-center text-gray-400 text-xs">
             等待全链路执行完成生成报告...
           </div>
         </div>
@@ -884,9 +1190,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-@keyframes flow {
+@keyframes workflow-flow {
   from {
-    stroke-dashoffset: 20;
+    stroke-dashoffset: 28;
   }
   to {
     stroke-dashoffset: 0;
@@ -894,6 +1200,6 @@ onMounted(() => {
 }
 
 .animate-flow {
-  animation: flow 1s linear infinite;
+  animation: workflow-flow 1.2s linear infinite;
 }
 </style>
