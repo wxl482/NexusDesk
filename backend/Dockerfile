@@ -14,6 +14,10 @@ ENV PYTHONUNBUFFERED=1 \
     OMP_NUM_THREADS=1 \
     HF_ENDPOINT=https://hf-mirror.com
 
+# 替换 Debian 官方源为阿里云镜像，加速 apt 软件包下载
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list 2>/dev/null || true
+
 # 安装系统级依赖与编译工具 (支持 C 扩展包如 psycopg, lxml 等编译与健康探针 curl)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -31,7 +35,7 @@ RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
     pip config set global.extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip config set global.trusted-host "mirrors.aliyun.com pypi.tuna.tsinghua.edu.cn" && \
     pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir --default-timeout=120 --retries=5 -r requirements.txt
 
 # 复制后端应用源码
 COPY . .
