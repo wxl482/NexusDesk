@@ -105,8 +105,42 @@ services:
       minio:
         condition: service_healthy
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: nexusdesk-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - POSTGRES_URI=postgresql://nexusdesk:nexusdesk@postgres:5432/nexusdesk
+      - MILVUS_URI=http://milvus:19530
+      - KMP_DUPLICATE_LIB_OK=TRUE
+      - OMP_NUM_THREADS=1
+    env_file:
+      - path: ./backend/.env
+        required: false
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      start_period: 25s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+
 volumes:
   pgdata:
   etcd:
   minio:
   milvus:
+
