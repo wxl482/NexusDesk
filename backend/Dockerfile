@@ -26,9 +26,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 先复制依赖描述文件，充分利用 Docker 镜像层缓存
 COPY requirements.txt .
 
-# 安装 Python 核心依赖
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+# 安装 Python 核心依赖 (配置阿里云+清华大学高速镜像源，杜绝云服务器下载卡顿)
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
+    pip config set global.extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip config set global.trusted-host "mirrors.aliyun.com pypi.tuna.tsinghua.edu.cn" && \
+    pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # 复制后端应用源码
 COPY . .
