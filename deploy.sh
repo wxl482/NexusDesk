@@ -60,6 +60,7 @@ check_env_file() {
 
 # 模式 1：Docker Compose 生产级一键全栈部署
 deploy_docker() {
+    local force_rebuild="${1:-false}"
     log_info "正在检查 Docker 运行环境..."
     if ! command -v docker &> /dev/null; then
         log_error "未检测到 Docker，请先安装 Docker Desktop 或 Docker Engine！"
@@ -79,11 +80,15 @@ deploy_docker() {
 
     check_env_file
 
-    log_info "正在通过 Docker Compose 构建并启动后端全栈容器集群..."
-    echo -e "${CYAN}包括: FastAPI 后端服务 + PostgreSQL 检查点存储 + Milvus 向量库 + MinIO + Etcd${RESET}\n"
-
     cd "${PROJECT_ROOT}"
-    ${DOCKER_COMPOSE} up -d --build
+    if [ "$force_rebuild" = "true" ]; then
+        log_info "代码更新模式：正在利用 Docker 分层缓存快速重构并启动容器..."
+        ${DOCKER_COMPOSE} up -d --build
+    else
+        log_info "正在极速启动后端全栈容器集群 (利用本地缓存秒级就绪)..."
+        echo -e "${CYAN}包括: FastAPI 后端服务 + PostgreSQL 检查点存储 + Milvus 向量库 + MinIO + Etcd${RESET}\n"
+        ${DOCKER_COMPOSE} up -d
+    fi
 
     log_info "正在等待服务完成健康自检 (约 15~30 秒)..."
     local retries=15
@@ -215,14 +220,15 @@ show_help() {
     echo "  ./deploy.sh [命令]"
     echo ""
     echo -e "${BOLD}可用命令:${RESET}"
-    echo -e "  ${GREEN}docker${RESET}   一键全栈容器化部署 (推荐: 后端 + PostgreSQL + Milvus 向量库)"
+    echo -e "  ${GREEN}docker${RESET}   一键秒级启动容器集群 (利用本地缓存，不重复下载)"
+    echo -e "  ${GREEN}rebuild${RESET}  代码更新后重新构建并拉起容器 (智能复用 pip 缓存)"
     echo -e "  ${GREEN}local${RESET}    本地轻量启动 (使用本地 Python 虚拟环境与 SQLite / Milvus-Lite)"
     echo -e "  ${GREEN}status${RESET}   查看服务运行与健康探活状态"
     echo -e "  ${GREEN}logs${RESET}     查看后端容器实时日志流"
     echo -e "  ${GREEN}stop${RESET}     停止所有部署的容器"
     echo -e "  ${GREEN}help${RESET}     查看此帮助信息"
     echo ""
-    echo "如果不传任何参数，默认执行 'docker' 一键全栈部署。"
+    echo "如果不传任何参数，默认执行 'docker' 秒级启动。"
 }
 
 # 主入口调度
@@ -231,7 +237,11 @@ COMMAND="${1:-docker}"
 case "$COMMAND" in
     docker)
         print_banner
-        deploy_docker
+        deploy_docker false
+        ;;
+    rebuild|update)
+        print_banner
+        deploy_docker true
         ;;
     local)
         print_banner
