@@ -20,11 +20,7 @@ const routes = [
     name: 'tools',
     component: ToolsView,
   },
-  {
-    path: '/workflow',
-    name: 'workflow',
-    component: () => import('../views/WorkflowView.vue'),
-  },
+
   {
     path: '/settings',
     name: 'settings',

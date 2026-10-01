@@ -259,34 +259,4 @@ export const apiClient = {
     const res = await api.get('/api/mcp/tools')
     return res.data.tools
   },
-
-  /** 获取所有可视化工作流编排列表 */
-  async getWorkflows() {
-    const res = await api.get('/api/workflows')
-    return res.data.workflows
-  },
-
-  /** 保存或更新可视化工作流 */
-  async saveWorkflow(workflow: any) {
-    const res = await api.post('/api/workflows', workflow)
-    return res.data
-  },
-
-  /** 删除可视化工作流 */
-  async deleteWorkflow(workflowId: string) {
-    const res = await api.delete(`/api/workflows/${workflowId}`)
-    return res.data
-  },
-
-  /** 单次在线运行可视化工作流 DAG 拓扑管道 */
-  async runWorkflow(workflow: any) {
-    const res = await api.post('/api/workflows/run', workflow)
-    return res.data
-  },
-
-  /** 切换工作流周期性自动调度状态 */
-  async toggleWorkflowSchedule(workflowId: string, enable: boolean) {
-    const res = await api.post(`/api/workflows/${workflowId}/schedule?enable=${enable}`)
-    return res.data
-  },
 }

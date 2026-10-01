@@ -12,7 +12,6 @@ import {
   Plus,
   Trash2,
   Pencil,
-  Workflow,
 } from 'lucide-vue-next'
 import { useChatStore } from '../stores/chat'
 import { useSettingsStore } from '../stores/settings'
@@ -178,19 +177,6 @@ const handleSelectSession = (sessionId: string) => {
         >
           <Wrench class="w-4 h-4" />
           <span>技能中心</span>
-        </router-link>
-
-        <router-link
-          to="/workflow"
-          class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
-          :class="[
-            route.path === '/workflow'
-              ? 'bg-gray-200/80 dark:bg-zinc-800 text-gray-900 dark:text-white font-semibold'
-              : 'text-gray-600 dark:text-zinc-400 hover:bg-gray-200/80 dark:hover:bg-zinc-800 hover:text-gray-900 dark:hover:text-white'
-          ]"
-        >
-          <Workflow class="w-4 h-4" />
-          <span>工作流编排</span>
         </router-link>
       </nav>
 
