@@ -18,6 +18,18 @@ export const apiClient = {
     return res.data
   },
 
+  /** 获取系统完整诊断数据 */
+  async getDiagnostics() {
+    const res = await api.get('/api/system/diagnostics')
+    return res.data
+  },
+
+  /** 导出系统诊断数据包文件 */
+  async exportDiagnostics() {
+    const res = await api.get('/api/system/diagnostics/export', { responseType: 'blob' })
+    return res
+  },
+
   /** 获取系统默认模型与主流供应商预设清单 */
   async getModelConfig() {
     const res = await api.get('/api/models/config')

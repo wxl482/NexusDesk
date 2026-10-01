@@ -28,6 +28,15 @@ import {
   Hand,
   ShieldCheck,
   AlertTriangle,
+  Download,
+  FileText,
+  Sparkles,
+  Cpu,
+  HardDrive,
+  Terminal,
+  ArrowDownToLine,
+  X,
+  Copy,
 } from 'lucide-vue-next'
 import { useSettingsStore } from '../stores/settings'
 import { useChatStore } from '../stores/chat'
@@ -176,6 +185,25 @@ onMounted(() => {
   settingsStore.checkBackendHealth()
   settingsStore.fetchProviders()
   window.addEventListener('click', handleDocumentClick)
+
+  // 监听 Electron 自动更新消息
+  if ((window as any).electronAPI?.onUpdaterMessage) {
+    ;(window as any).electronAPI.onUpdaterMessage((data: any) => {
+      if (data.status === 'available') {
+        updateStatus.value = 'available'
+        updateInfo.value = { version: data.version, releaseNotes: data.releaseNotes }
+      } else if (data.status === 'downloading') {
+        updateStatus.value = 'downloading'
+        updateInfo.value = { ...updateInfo.value, percent: data.percent }
+      } else if (data.status === 'downloaded') {
+        updateStatus.value = 'downloaded'
+        updateInfo.value = { ...updateInfo.value, version: data.version, percent: 100 }
+      }
+    })
+  }
+
+  // 初次加载系统诊断数据
+  handleLoadDiagnostics()
 })
 
 onUnmounted(() => {
@@ -246,6 +274,105 @@ const handleClearHistory = () => {
     chatStore.clearAllSessions()
     alert('已成功清空所有历史会话记录。')
   }
+}
+
+// ==========================================
+// 自动更新状态管理 (Auto Updater)
+// ==========================================
+const isCheckingUpdate = ref(false)
+const updateStatus = ref<'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'downloaded' | 'error'>('idle')
+const updateInfo = ref<{ version?: string; releaseNotes?: string; percent?: number; errorMsg?: string }>({})
+
+// 手动检查更新
+const handleCheckForUpdates = async () => {
+  isCheckingUpdate.value = true
+  updateStatus.value = 'checking'
+  try {
+    if ((window as any).electronAPI?.checkForUpdates) {
+      const res = await (window as any).electronAPI.checkForUpdates()
+      if (res?.status === 'dev') {
+        updateStatus.value = 'latest'
+        updateInfo.value = { releaseNotes: '当前处于开发模式，已跳过静默下载。正式构建版将直连 GitHub Releases。' }
+      } else if (res?.status === 'error') {
+        updateStatus.value = 'error'
+        updateInfo.value = { errorMsg: res.message || '检查更新失败' }
+      }
+    } else {
+      setTimeout(() => {
+        updateStatus.value = 'latest'
+      }, 600)
+    }
+  } catch (err: any) {
+    updateStatus.value = 'error'
+    updateInfo.value = { errorMsg: err.message || '检查更新异常' }
+  } finally {
+    isCheckingUpdate.value = false
+  }
+}
+
+// 重启并安装更新
+const handleInstallUpdate = () => {
+  if ((window as any).electronAPI?.quitAndInstallUpdate) {
+    ;(window as any).electronAPI.quitAndInstallUpdate()
+  }
+}
+
+// ==========================================
+// 系统诊断与日志中心 (Diagnostics & Logs)
+// ==========================================
+const isExportingDiagnostics = ref(false)
+const diagnosticsData = ref<any>(null)
+const isLoadingDiagnostics = ref(false)
+const showLogsModal = ref(false)
+const logsCopied = ref(false)
+
+// 加载系统诊断数据
+const handleLoadDiagnostics = async () => {
+  isLoadingDiagnostics.value = true
+  try {
+    diagnosticsData.value = await apiClient.getDiagnostics()
+  } catch (e: any) {
+    console.error('获取系统诊断数据失败:', e)
+  } finally {
+    isLoadingDiagnostics.value = false
+  }
+}
+
+// 导出系统诊断包 (JSON 文件下载)
+const handleExportDiagnostics = async () => {
+  isExportingDiagnostics.value = true
+  try {
+    const res = await apiClient.exportDiagnostics()
+    const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+    a.download = `nexusdesk_diagnostics_${timestamp}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+  } catch (e: any) {
+    alert('导出诊断数据失败: ' + (e.message || '未知错误'))
+  } finally {
+    isExportingDiagnostics.value = false
+  }
+}
+
+// 复制日志到剪贴板
+const handleCopyLogs = async () => {
+  if (!diagnosticsData.value?.recent_logs) return
+  const logText = diagnosticsData.value.recent_logs.join('\n')
+  try {
+    await navigator.clipboard.writeText(logText)
+    logsCopied.value = true
+    setTimeout(() => {
+      logsCopied.value = false
+    }, 2000)
+  } catch (_) {}
 }
 </script>
 
@@ -880,58 +1007,286 @@ const handleClearHistory = () => {
 
           <!-- 页面 4：关于与系统状态 (activeTab === 'about') -->
           <div v-else-if="activeTab === 'about'" class="space-y-6">
-            <!-- 分区 1: 软件与系统 -->
+            <!-- 分区 1: 软件与自动更新 -->
             <div>
-              <h2 class="text-sm font-semibold text-gray-900 dark:text-white mb-2.5">软件与架构</h2>
+              <div class="flex items-center justify-between mb-2.5">
+                <h2 class="text-sm font-semibold text-gray-900 dark:text-white">软件与版本更新</h2>
+                <button
+                  @click="openExternalLink('https://github.com/wxl482/NexusDesk/releases')"
+                  type="button"
+                  class="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  <span>访问 GitHub Releases</span>
+                  <ExternalLink class="w-3 h-3" />
+                </button>
+              </div>
+
               <div class="rounded-2xl border border-gray-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden divide-y divide-gray-100 dark:divide-zinc-800/80 shadow-2xs">
-                <div class="px-5 py-3.5 flex items-center justify-between gap-4">
+                <!-- 版本与检查更新行 -->
+                <div class="px-5 py-4 flex items-center justify-between gap-4">
                   <div>
-                    <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">客户端版本</div>
-                    <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">NexusDesk 智能体桌面工作台 (NexusDesk AI Workstation)</div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">客户端版本</span>
+                      <span class="px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 border border-gray-200 dark:border-zinc-700">
+                        v1.0.0
+                      </span>
+                    </div>
+                    <div class="text-xs text-gray-500 dark:text-zinc-400 mt-1">
+                      NexusDesk 智能体桌面工作台 (NexusDesk AI Workstation)
+                    </div>
                   </div>
-                  <span class="text-xs font-mono font-medium text-gray-500 dark:text-zinc-400">v1.0.0</span>
+
+                  <div class="flex items-center gap-2 flex-shrink-0">
+                    <button
+                      v-if="updateStatus === 'downloaded'"
+                      @click="handleInstallUpdate"
+                      type="button"
+                      class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium transition-colors shadow-2xs flex items-center gap-1.5 cursor-pointer animate-pulse"
+                    >
+                      <Sparkles class="w-3.5 h-3.5" />
+                      <span>立即重启升级</span>
+                    </button>
+
+                    <button
+                      v-else
+                      @click="handleCheckForUpdates"
+                      :disabled="isCheckingUpdate || updateStatus === 'downloading'"
+                      type="button"
+                      class="px-3.5 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-gray-50 dark:hover:bg-zinc-700 text-gray-700 dark:text-zinc-200 text-xs font-medium transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-2xs"
+                    >
+                      <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isCheckingUpdate }" />
+                      <span>{{ isCheckingUpdate ? '正在检测...' : (updateStatus === 'latest' ? '已是最新版 (重新检查)' : '检查更新') }}</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div class="px-5 py-3.5 flex items-center justify-between gap-4">
-                  <div>
-                    <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">底层调度引擎</div>
-                    <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">支持自主调度、工具回调与上下文记忆流</div>
+                <!-- 下载进度条提示（当后台静默拉取更新时展示） -->
+                <div v-if="updateStatus === 'downloading'" class="px-5 py-3.5 bg-blue-50/50 dark:bg-blue-950/20">
+                  <div class="flex items-center justify-between text-xs mb-1.5">
+                    <span class="font-medium text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
+                      <Download class="w-3.5 h-3.5 animate-bounce" />
+                      正在下载新版本安装包...
+                    </span>
+                    <span class="font-mono text-blue-600 dark:text-blue-400 font-semibold">
+                      {{ updateInfo.percent || 0 }}%
+                    </span>
                   </div>
-                  <span class="text-xs font-medium text-gray-800 dark:text-zinc-200">LangChain & LangGraph</span>
+                  <div class="w-full h-1.5 rounded-full bg-blue-100 dark:bg-blue-900/50 overflow-hidden">
+                    <div
+                      class="h-full bg-blue-600 dark:bg-blue-500 transition-all duration-300 rounded-full"
+                      :style="{ width: `${updateInfo.percent || 0}%` }"
+                    ></div>
+                  </div>
+                </div>
+
+                <!-- 发现新版本但未开始下载时的说明 -->
+                <div v-if="updateStatus === 'available'" class="px-5 py-3 bg-amber-50/60 dark:bg-amber-950/20 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between">
+                  <span>发现新版本 {{ updateInfo.version }}，已在后台自动下载。</span>
+                </div>
+
+                <!-- 检查更新出错提示 -->
+                <div v-if="updateStatus === 'error'" class="px-5 py-3 bg-rose-50/60 dark:bg-rose-950/20 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                  <AlertCircle class="w-4 h-4 flex-shrink-0" />
+                  <span>{{ updateInfo.errorMsg || '检查更新失败，请稍后重试或前往 GitHub 手动下载。' }}</span>
                 </div>
               </div>
             </div>
 
-            <!-- 分区 2: 本地服务状况 -->
+            <!-- 分区 2: 系统运行诊断与指标 -->
             <div>
-              <h2 class="text-sm font-semibold text-gray-900 dark:text-white mb-2.5">本地运行环境</h2>
+              <div class="flex items-center justify-between mb-2.5">
+                <h2 class="text-sm font-semibold text-gray-900 dark:text-white">系统运行诊断与环境指标</h2>
+                <div class="flex items-center gap-2">
+                  <button
+                    @click="handleLoadDiagnostics"
+                    :disabled="isLoadingDiagnostics"
+                    type="button"
+                    class="text-xs text-gray-500 hover:text-gray-800 dark:text-zinc-400 dark:hover:text-zinc-200 flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <RefreshCw class="w-3 h-3" :class="{ 'animate-spin': isLoadingDiagnostics }" />
+                    <span>刷新指标</span>
+                  </button>
+                  <button
+                    @click="showLogsModal = true"
+                    type="button"
+                    class="px-2.5 py-1 rounded-md text-xs font-medium border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-gray-50 dark:hover:bg-zinc-700 text-gray-700 dark:text-zinc-200 shadow-2xs flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <Terminal class="w-3.5 h-3.5" />
+                    <span>查看实时日志</span>
+                  </button>
+                  <button
+                    @click="handleExportDiagnostics"
+                    :disabled="isExportingDiagnostics"
+                    type="button"
+                    class="px-2.5 py-1 rounded-md text-xs font-medium bg-gray-900 hover:bg-gray-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-gray-900 shadow-2xs flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <ArrowDownToLine class="w-3.5 h-3.5" />
+                    <span>{{ isExportingDiagnostics ? '打包中...' : '导出诊断包' }}</span>
+                  </button>
+                </div>
+              </div>
+
               <div class="rounded-2xl border border-gray-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden divide-y divide-gray-100 dark:divide-zinc-800/80 shadow-2xs">
+                <!-- 操作系统与平台 -->
                 <div class="px-5 py-3.5 flex items-center justify-between gap-4">
-                  <div>
-                    <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">智能体后端进程</div>
-                    <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">FastAPI 本地服务 (http://127.0.0.1:8000)</div>
+                  <div class="flex items-center gap-3">
+                    <div class="w-7 h-7 rounded-lg bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-gray-600 dark:text-zinc-400">
+                      <Cpu class="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">宿主系统平台</div>
+                      <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
+                        {{ diagnosticsData?.system?.os || '桌面客户端' }} {{ diagnosticsData?.system?.os_release || '' }} ({{ diagnosticsData?.system?.architecture || 'x64' }})
+                      </div>
+                    </div>
+                  </div>
+                  <span class="text-xs font-mono font-medium text-gray-600 dark:text-zinc-300">
+                    Python {{ diagnosticsData?.system?.python_version || '3.11' }}
+                  </span>
+                </div>
+
+                <!-- 后端引擎 -->
+                <div class="px-5 py-3.5 flex items-center justify-between gap-4">
+                  <div class="flex items-center gap-3">
+                    <div class="w-7 h-7 rounded-lg bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-gray-600 dark:text-zinc-400">
+                      <Bot class="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">智能体推理后端</div>
+                      <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">FastAPI 服务引擎 (PID: {{ diagnosticsData?.app?.pid || '自动管理' }})</div>
+                    </div>
                   </div>
                   <div class="flex items-center gap-1.5 text-xs font-medium" :class="settingsStore.backendOnline ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-500'">
                     <span class="w-2 h-2 rounded-full" :class="settingsStore.backendOnline ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-amber-500 animate-pulse'"></span>
-                    <span>{{ settingsStore.backendOnline ? '就绪运行中' : '连接后端中' }}</span>
+                    <span>{{ settingsStore.backendOnline ? '端口 8000 就绪' : '连接后端中' }}</span>
                   </div>
                 </div>
 
+                <!-- 会话检查点持久化状态 -->
                 <div class="px-5 py-3.5 flex items-center justify-between gap-4">
-                  <div>
-                    <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">本地向量数据库</div>
-                    <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">用于文档分块持久化与余弦相似度召回</div>
+                  <div class="flex items-center gap-3">
+                    <div class="w-7 h-7 rounded-lg bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-gray-600 dark:text-zinc-400">
+                      <HardDrive class="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">会话上下文检查点 (LangGraph Checkpointer)</div>
+                      <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
+                        {{ diagnosticsData?.storage_and_services?.checkpointer === 'connected' ? 'PostgreSQL 数据库连接池就绪' : '内存检查点安全降级模式 (连接池自愈备用)' }}
+                      </div>
+                    </div>
                   </div>
-                  <span class="text-xs font-medium text-gray-800 dark:text-zinc-200">Chroma 离线引擎</span>
+                  <span
+                    class="text-xs font-medium px-2 py-0.5 rounded-full"
+                    :class="diagnosticsData?.storage_and_services?.checkpointer === 'connected' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'"
+                  >
+                    {{ diagnosticsData?.storage_and_services?.checkpointer === 'connected' ? 'Postgres 正常' : '内存降级自愈' }}
+                  </span>
                 </div>
 
+                <!-- 知识库与向量库 -->
                 <div class="px-5 py-3.5 flex items-center justify-between gap-4">
-                  <div>
-                    <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">数据与隐私安全</div>
-                    <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">历史对话记录与知识库向量均完全隔离存储于本机</div>
+                  <div class="flex items-center gap-3">
+                    <div class="w-7 h-7 rounded-lg bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-gray-600 dark:text-zinc-400">
+                      <BookOpen class="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">本地知识库向量索引</div>
+                      <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">余弦相似度密集向量检索与持久化</div>
+                    </div>
                   </div>
-                  <span class="text-xs font-medium text-gray-600 dark:text-zinc-300">本地离线优先 · 安全沙箱</span>
+                  <span class="text-xs font-medium text-gray-800 dark:text-zinc-200">
+                    已入库 {{ diagnosticsData?.storage_and_services?.rag?.document_count ?? ragStore.documents.length }} 篇文档
+                  </span>
                 </div>
+
+                <!-- MCP 外部工具协议 -->
+                <div class="px-5 py-3.5 flex items-center justify-between gap-4">
+                  <div class="flex items-center gap-3">
+                    <div class="w-7 h-7 rounded-lg bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-gray-600 dark:text-zinc-400">
+                      <GearIcon class="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-semibold text-gray-900 dark:text-zinc-100">MCP (Model Context Protocol) 插件</div>
+                      <div class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">外部环境与开发工具上下文互联</div>
+                    </div>
+                  </div>
+                  <span class="text-xs font-medium text-gray-800 dark:text-zinc-200">
+                    已启用 {{ diagnosticsData?.storage_and_services?.mcp?.enabled_servers ?? 0 }} / 共 {{ diagnosticsData?.storage_and_services?.mcp?.total_servers ?? 0 }} 个
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 日志抽屉 / 模态框 -->
+          <div
+            v-if="showLogsModal"
+            class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200"
+          >
+            <div class="w-full max-w-3xl bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-zinc-800 flex flex-col max-h-[85vh] overflow-hidden">
+              <!-- 模态框顶部 -->
+              <div class="px-5 py-3.5 border-b border-gray-100 dark:border-zinc-800 flex items-center justify-between bg-gray-50/50 dark:bg-zinc-800/40">
+                <div class="flex items-center gap-2">
+                  <Terminal class="w-4 h-4 text-gray-600 dark:text-zinc-300" />
+                  <span class="text-sm font-semibold text-gray-900 dark:text-white">系统实时运行日志 (最新 80 行)</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button
+                    @click="handleCopyLogs"
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-md border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-gray-50 dark:hover:bg-zinc-700 text-gray-700 dark:text-zinc-300 flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <Check v-if="logsCopied" class="w-3.5 h-3.5 text-emerald-600" />
+                    <Copy v-else class="w-3.5 h-3.5" />
+                    <span>{{ logsCopied ? '已复制' : '复制全文' }}</span>
+                  </button>
+                  <button
+                    @click="handleLoadDiagnostics"
+                    type="button"
+                    class="px-2 py-1 text-xs rounded-md border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-gray-50 dark:hover:bg-zinc-700 text-gray-700 dark:text-zinc-300 flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoadingDiagnostics }" />
+                  </button>
+                  <button
+                    @click="showLogsModal = false"
+                    type="button"
+                    class="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-zinc-200 rounded-md transition-colors cursor-pointer"
+                  >
+                    <X class="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <!-- 模态框正文：黑底等宽日志控制台 -->
+              <div class="flex-1 p-4 bg-[#1e1e1e] overflow-y-auto font-mono text-[11px] leading-relaxed text-zinc-300 select-text">
+                <div v-if="!diagnosticsData?.recent_logs || diagnosticsData.recent_logs.length === 0" class="text-zinc-500 py-8 text-center">
+                  暂无日志输出或正在初始化中...
+                </div>
+                <div
+                  v-for="(line, idx) in diagnosticsData?.recent_logs"
+                  :key="idx"
+                  class="hover:bg-zinc-800/40 px-1 py-0.5 rounded transition-colors whitespace-pre-wrap break-all"
+                  :class="{
+                    'text-rose-400 font-medium': line.includes('ERROR') || line.includes('Exception'),
+                    'text-amber-300': line.includes('WARNING'),
+                    'text-emerald-400': line.includes('INFO') && line.includes('成功'),
+                    'text-sky-300': line.includes('HTTP'),
+                  }"
+                >
+                  {{ line }}
+                </div>
+              </div>
+
+              <!-- 模态框底部 -->
+              <div class="px-5 py-3 border-t border-gray-100 dark:border-zinc-800 flex items-center justify-between text-xs text-gray-500 dark:text-zinc-400 bg-gray-50/50 dark:bg-zinc-800/40">
+                <span>日志采集于本地 logs 目录，包含异常堆栈、请求轨迹与核心状态。</span>
+                <button
+                  @click="showLogsModal = false"
+                  type="button"
+                  class="px-3 py-1 rounded-lg bg-gray-900 hover:bg-gray-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-gray-900 text-xs font-medium transition-colors cursor-pointer"
+                >
+                  关闭
+                </button>
               </div>
             </div>
           </div>
