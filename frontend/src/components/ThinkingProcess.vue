@@ -18,6 +18,8 @@ import {
   Code2,
   Trash2,
   Wrench,
+  Boxes,
+  Plug,
   ChevronRight,
   ChevronDown,
   Loader2,
@@ -250,6 +252,21 @@ const formatToolSummary = (tool: ToolCallItem) => {
     }
   }
 
+  // 9. MCP 外部生态插件
+  if (name.startsWith('mcp_') || (tool as any).isMcp) {
+    const rawParts = tool.name.replace(/^mcp_/, '').split('_')
+    const serverName = rawParts[0] || 'mcp'
+    const actionName = rawParts.slice(1).join('_') || 'tool'
+    const primaryArg = inputObj.query || inputObj.path || inputObj.file_path || inputObj.sql || inputObj.url || inputObj.prompt || inputObj.cmd || (Object.keys(inputObj).length > 0 ? JSON.stringify(inputObj).slice(0, 45) : '')
+    return {
+      type: 'mcp',
+      icon: Boxes,
+      isMcp: true,
+      label: tool.status === 'running' ? `[MCP·${serverName}] 正在执行 ${actionName}` : (tool.status === 'error' ? `[MCP·${serverName}] 执行 ${actionName} 异常` : `[MCP·${serverName}] 已执行 ${actionName}`),
+      detail: primaryArg ? String(primaryArg) : '',
+    }
+  }
+
   // 兜底通用
   return {
     type: 'generic',
@@ -327,11 +344,15 @@ const formatToolSummary = (tool: ToolCallItem) => {
             <!-- 工具图标 -->
             <component
               :is="formatToolSummary(t).icon"
-              class="w-3.5 h-3.5 flex-shrink-0 text-gray-500 dark:text-zinc-400"
+              class="w-3.5 h-3.5 flex-shrink-0"
+              :class="formatToolSummary(t).isMcp ? 'text-purple-500 dark:text-purple-400' : 'text-gray-500 dark:text-zinc-400'"
             />
 
             <!-- 操作动作标签：如 "已搜索网页 :" -->
-            <span class="font-normal flex-shrink-0 text-gray-700 dark:text-zinc-300">
+            <span
+              class="font-normal flex-shrink-0"
+              :class="formatToolSummary(t).isMcp ? 'text-purple-700 dark:text-purple-300 font-medium' : 'text-gray-700 dark:text-zinc-300'"
+            >
               {{ formatToolSummary(t).label }} :
             </span>
 

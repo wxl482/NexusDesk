@@ -25,6 +25,11 @@ import {
   ExternalLink,
   Code,
   Sliders,
+  Database,
+  Search,
+  Sparkles,
+  Layers,
+  Check,
 } from 'lucide-vue-next'
 import { apiClient } from '../api/client'
 
@@ -145,33 +150,99 @@ const presets = [
     name: 'SQLite Database Query',
     command: 'mcp-server-sqlite',
     argsText: '--db-path ./backend/data/app.db',
-    description: '基于官方 Python MCP 规范通过标准 SQL 查询本地 SQLite 数据库表结构与数据记录',
+    description: '通过标准 SQL 查询本地 SQLite 数据库表结构与数据记录',
+    tag: '数据库',
   },
   {
-    label: '官方 Fetch 爬虫',
+    label: '官方 Fetch 爬虫与内容抓取',
     id: 'fetch',
     name: 'Web Content Fetcher',
     command: 'mcp-server-fetch',
     argsText: '',
     description: '基于官方 Python MCP 规范的外部网页内容与 Markdown 提取服务',
+    tag: '网络',
   },
   {
-    label: '安全本地文件系统',
+    label: '安全工作区文件系统',
     id: 'filesystem',
     name: 'Secure Filesystem Access',
     command: 'npx',
     argsText: '-y @modelcontextprotocol/server-filesystem ./backend/data',
     description: '限定在工作区安全目录下的文件读写与搜索服务',
+    tag: '系统',
   },
   {
-    label: 'GitHub 官方服务',
+    label: 'GitHub 官方代码仓库管理',
     id: 'github',
     name: 'GitHub API Service',
     command: 'npx',
     argsText: '-y @modelcontextprotocol/server-github',
     description: '管理 GitHub 仓库、提交、Issues 与 Pull Requests',
+    tag: '开发',
+  },
+  {
+    label: 'Brave Search 实时搜索引擎',
+    id: 'brave_search',
+    name: 'Brave Web Search',
+    command: 'npx',
+    argsText: '-y @modelcontextprotocol/server-brave-search',
+    description: '通过 Brave Search API 进行实时互联网深度信息检索与新闻抓取',
+    tag: '网络',
+  },
+  {
+    label: 'PostgreSQL 数据库管理',
+    id: 'postgres',
+    name: 'PostgreSQL Database',
+    command: 'npx',
+    argsText: '-y @modelcontextprotocol/server-postgres postgresql://nexusdesk:nexusdesk@localhost:5432/nexusdesk',
+    description: '连接本地或远程 PostgreSQL 数据库，自动提取 Schema 与执行分析',
+    tag: '数据库',
+  },
+  {
+    label: 'Memory 知识图谱记忆引擎',
+    id: 'memory',
+    name: 'Memory Knowledge Graph',
+    command: 'npx',
+    argsText: '-y @modelcontextprotocol/server-memory',
+    description: '基于实体关系与知识图谱的持久化会话记忆存储',
+    tag: 'AI记忆',
   },
 ]
+
+const isInstallingPresetId = ref<string | null>(null)
+
+const isPresetInstalled = (presetId: string) => {
+  return mcpServers.value.some(s => s.id === presetId)
+}
+
+const handleQuickInstallPreset = async (p: typeof presets[0]) => {
+  if (isPresetInstalled(p.id)) {
+    message.info(`插件《${p.name}》已存在于配置列表中`)
+    return
+  }
+  isInstallingPresetId.value = p.id
+  try {
+    const args = p.argsText.trim() ? p.argsText.trim().split(/\s+/) : []
+    await apiClient.registerMcpServer({
+      id: p.id,
+      name: p.name,
+      command: p.command,
+      args,
+      enabled: true,
+      description: p.description,
+    })
+    message.success(`已快速装配 MCP 插件《${p.name}》`)
+    await fetchMcpServers()
+    const target = mcpServers.value.find(s => s.id === p.id)
+    if (target) {
+      handleProbeMcp(target)
+    }
+  } catch (err: any) {
+    message.error(`安装插件失败: ${err.message}`)
+  } finally {
+    isInstallingPresetId.value = null
+  }
+}
 
 const applyPreset = (p: typeof presets[0]) => {
   newServer.value.id = p.id
@@ -391,13 +462,112 @@ onMounted(() => {
       </div>
 
       <!-- 选项卡 2：MCP 外部插件协议 -->
-      <div v-else-if="activeTab === 'mcp'" class="space-y-4">
-        <!-- MCP 服务列表 -->
-        <div v-if="mcpServers.length === 0" class="p-8 text-center border border-gray-200 dark:border-zinc-800 rounded-xl bg-white dark:bg-zinc-900/50 text-gray-400 text-xs">
-          暂无已配置的 MCP 服务。点击右上角「注册 MCP 服务」快速绑定官方或社区插件。
+      <div v-else-if="activeTab === 'mcp'" class="space-y-6">
+        <!-- 1. 官方精选 MCP 生态插件市场 (Featured Plugin Hub) -->
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <Sparkles class="w-4 h-4 text-purple-600 dark:text-purple-400" />
+              <h2 class="text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-zinc-300">
+                官方精选生态插件市场 (1-Click Hub)
+              </h2>
+            </div>
+            <span class="text-[11px] text-gray-400 dark:text-zinc-500">
+              免繁琐配置 · 一键接入智能体工具箱
+            </span>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div
+              v-for="p in presets"
+              :key="p.id"
+              class="p-3.5 rounded-xl border bg-white dark:bg-zinc-900 flex flex-col justify-between shadow-2xs transition-all group"
+              :class="isPresetInstalled(p.id) ? 'border-purple-200/90 dark:border-purple-900/40 bg-purple-50/10' : 'border-gray-200/90 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'"
+            >
+              <div class="space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="px-2 py-0.5 rounded text-[10px] font-medium"
+                    :class="[
+                      p.tag === '数据库' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300' :
+                      p.tag === '网络' ? 'bg-sky-100 text-sky-800 dark:bg-sky-950/50 dark:text-sky-300' :
+                      p.tag === '开发' ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/50 dark:text-indigo-300' :
+                      p.tag === '系统' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300' :
+                      'bg-purple-100 text-purple-800 dark:bg-purple-950/50 dark:text-purple-300'
+                    ]"
+                  >
+                    {{ p.tag }}
+                  </span>
+
+                  <span v-if="isPresetInstalled(p.id)" class="flex items-center gap-1 text-[11px] font-medium text-purple-600 dark:text-purple-400">
+                    <Check class="w-3.5 h-3.5" />
+                    <span>已装配</span>
+                  </span>
+                </div>
+
+                <div>
+                  <h3 class="text-xs font-bold text-gray-900 dark:text-zinc-100">
+                    {{ p.label }}
+                  </h3>
+                  <p class="text-[11px] text-gray-500 dark:text-zinc-400 mt-1 line-clamp-2 leading-relaxed">
+                    {{ p.description }}
+                  </p>
+                </div>
+              </div>
+
+              <div class="mt-3 pt-2.5 border-t border-gray-100 dark:border-zinc-800/80 flex items-center justify-between gap-2">
+                <span class="text-[10px] font-mono text-gray-400 dark:text-zinc-500 truncate">
+                  {{ p.command }}
+                </span>
+
+                <button
+                  v-if="!isPresetInstalled(p.id)"
+                  @click="handleQuickInstallPreset(p)"
+                  :disabled="isInstallingPresetId === p.id"
+                  type="button"
+                  class="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-medium transition-colors shadow-2xs flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw v-if="isInstallingPresetId === p.id" class="w-3 h-3 animate-spin" />
+                  <Plus v-else class="w-3 h-3" />
+                  <span>{{ isInstallingPresetId === p.id ? '装配中...' : '一键装配' }}</span>
+                </button>
+
+                <button
+                  v-else
+                  @click="applyPreset(p); showAddModal = true"
+                  type="button"
+                  class="text-[11px] text-gray-500 dark:text-zinc-400 hover:text-purple-600 dark:hover:text-purple-400 transition-colors cursor-pointer"
+                >
+                  参数配置
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div v-else class="space-y-3">
+        <!-- 2. 已装配的 MCP 服务列表 -->
+        <div class="space-y-3 pt-2 border-t border-gray-200/80 dark:border-zinc-800">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <Boxes class="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              <h2 class="text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-zinc-300">
+                已装配激活的 MCP 服务 ({{ mcpServers.length }})
+              </h2>
+            </div>
+            <button
+              @click="showAddModal = true"
+              type="button"
+              class="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 cursor-pointer"
+            >
+              <Plus class="w-3.5 h-3.5" />
+              <span>自定义添加服务</span>
+            </button>
+          </div>
+
+          <div v-if="mcpServers.length === 0" class="p-8 text-center border border-gray-200 dark:border-zinc-800 rounded-xl bg-white dark:bg-zinc-900/50 text-gray-400 text-xs">
+            暂无已配置的 MCP 服务。点击上方插件市场「一键装配」快速接入。
+          </div>
+
+          <div v-else class="space-y-3">
           <div
             v-for="s in mcpServers"
             :key="s.id"
@@ -510,6 +680,7 @@ onMounted(() => {
         </div>
       </div>
     </div>
+  </div>
 
     <!-- 注册 MCP 外部服务模态弹窗 -->
     <div
