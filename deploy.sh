@@ -91,7 +91,7 @@ deploy_docker() {
 
     for i in $(seq 1 $retries); do
         sleep 2
-        if curl -s -f http://localhost:8000/api/health > /dev/null 2>&1; then
+        if curl -s -f http://localhost:8000/health > /dev/null 2>&1 || curl -s -f http://localhost:8000/api/health > /dev/null 2>&1; then
             success=true
             break
         fi
@@ -170,12 +170,12 @@ show_status() {
         fi
     fi
 
-    # 探针请求
-    HEALTH_RES=$(curl -s http://localhost:8000/api/health || true)
+    # 探针请求 (优先探测 /health，兼容 /api/health)
+    HEALTH_RES=$(curl -s -f http://localhost:8000/health 2>/dev/null || curl -s -f http://localhost:8000/api/health 2>/dev/null || true)
     if [ -n "$HEALTH_RES" ]; then
         log_success "后端服务健康探针响应正常: $HEALTH_RES"
     else
-        log_warn "后端 HTTP 服务探活无响应 (http://localhost:8000/api/health)"
+        log_warn "后端 HTTP 服务探活无响应 (请检查服务是否就绪)"
     fi
 
     # 检查 Docker 容器

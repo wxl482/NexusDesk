@@ -11,6 +11,7 @@ router = APIRouter(tags=["服务健康检查与系统诊断"])
 
 
 @router.get("/health")
+@router.get("/api/health")
 async def health_check():
     """
     供 Electron 主进程或监控系统轮询探测的健康检查接口。
